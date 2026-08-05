@@ -26,77 +26,138 @@ def save_feedback(data):
 
 # 페이지 기본 설정
 st.set_page_config(
-    page_title='인플루언서 뉴스 큐레이션 및 검수', layout='wide'
+    page_title='인플루언서 뉴스 SNS 콘텐츠 큐레이션', layout='wide'
 )
 
-st.title('📰 인플루언서 관련 뉴스 큐레이션 및 AI 원고 검수')
+st.title('📱 인플루언서 뉴스 SNS 콘텐츠 큐레이션 & 검수')
 st.caption(
-    '팀원 검수 파이프라인 | 발행일시, 출처, 수집처 정보 포함 및 뉴스 수량 확대'
+    '인플루언서 부정이슈 / 긍정이슈 / 마케팅 동향 분류 및 숏폼·SNS 맞춤형 대본 검수 시스템'
 )
 
 # ------------------------------------------------------------------
-# 샘플 데이터 (뉴스 수량 5개로 확대 및 상세 정보 포함)
+# 샘플 데이터 (카테고리 분류 및 SNS 콘텐츠용 대본 적용)
 # ------------------------------------------------------------------
 news_items = [
     {
         'id': 1,
+        'category': '긍정이슈',
         'title': '인플루언서 A, 브랜드 B와 대규모 글로벌 컬래버레이션 발표',
         'published_at': '2026-08-05 09:00',
         'source_name': '매일경제',
         'source_url': 'https://news.naver.com',
         'crawled_from': '네이버 뉴스 API',
         'summary': '인플루언서 A가 글로벌 뷰티 브랜드 B와의 협업 라인을 공개하며 파리 팝업스토어 개최 소식을 발표함.',
-        'ai_script': '안녕하세요 여러분! 오늘은 인플루언서 A의 놀라운 글로벌 행보 소식을 가져왔습니다. 브랜드 B와의 협업 팝업스토어 현장 반응까지 빠르게 살펴볼까요?',
+        'sns_script': """🔥 **[릴스/숏츠 대본 파이프라인]**
+- **[Hooking 멘트]** "진짜 미쳤다! 뷰티 유튜버 A가 결국 글로벌 브랜드 B랑 사고를 쳤습니다?!"
+- **[본문 자막 & 오디오]**
+  "파리 현지 팝업스토어 오픈 소식에 해외 팬들 반응까지 난리 났는데요! 이번 뷰티 콜라보 라인은 출시 전부터 완판 예감이라는 소문입니다."
+- **[화면 연출 팁]** A의 파리 팝업 인스타 스토리를 빠르게 교차 편집
+- **[CTA]** "이번 콜라보 제품 정보가 궁금하다면 댓글에 '콜라보'라고 남겨주세요!"
+""",
     },
     {
         'id': 2,
-        'title': '숏폼 크리에이터 중심의 마케팅 시장, 전년 대비 45% 성장',
+        'category': '부정이슈',
+        'title': '유명 인플루언서 D, 표기 의무 위반 뒷광고 논란에 사과문 게재',
+        'published_at': '2026-08-04 22:10',
+        'source_name': '디스패치',
+        'source_url': 'https://news.naver.com',
+        'crawled_from': '네이버 뉴스 API',
+        'summary': '구독자 80만의 뷰티 크리에이터 D가 협찬 및 유료광고 표시를 누락한 사실이 밝혀지며 네티즌들의 반발을 사고 있음.',
+        'sns_script': """⚠️ **[릴스/숏츠 대본 파이프라인]**
+- **[Hooking 멘트]** "80만 크리에이터 D가 결국 사과문까지 게재했습니다... 대체 무슨 일일까요?"
+- **[본문 자막 & 오디오]**
+  "최근 업로드된 내돈내산 영상에서 유료 광고 표기를 은폐했다는 의혹이 제기됐는데요, 네티즌들의 피드백이 거세지자 결국 모든 협찬 사실을 인정했습니다."
+- **[화면 연출 팁]** 사과문 캡처 화면 줌인 및 흑백 톤 다운 효과
+- **[CTA]** "여러분은 인플루언서의 뒷광고 논란, 어떻게 생각하시나요? 댓글로 의견을 공유해 주세요."
+""",
+    },
+    {
+        'id': 3,
+        'category': '마케팅 동향',
+        'title': '숏폼 크리에이터 중심의 마케팅 시장, 전년 대비 45% 폭풍 성장',
         'published_at': '2026-08-04 18:30',
         'source_name': '한국경제',
         'source_url': 'https://news.naver.com',
         'crawled_from': '네이버 뉴스 API',
-        'summary': '틱톡과 숏츠 등 숏폼 콘텐츠 크리에이터를 활용한 마케팅 집행비가 폭발적으로 증가하는 추세임.',
-        'ai_script': '숏폼이 트렌드를 지배하는 시대! 크리에이터 마케팅 시장이 무려 45%나 성장했습니다. 브랜드들이 왜 숏폼으로 몰리는지 분석해 드립니다.',
+        'summary': '틱톡, 인스타 릴스, 유튜브 숏츠 등 숏폼 크리에이터를 활용한 마케팅 집행비가 폭발적으로 증가함.',
+        'sns_script': """📊 **[릴스/숏츠 대본 파이프라인]**
+- **[Hooking 멘트]** "요즘 브랜드 마케터들이 돈을 어디에 다 쓰는지 아시나요?"
+- **[본문 자막 & 오디오]**
+  "무려 전년 대비 45%나 성장한 분야! 바로 숏폼 크리에이터 마케팅입니다. 이젠 롱폼보다 1분 미만 숏폼 협업이 매출을 좌우하고 있다는 분석인데요."
+- **[화면 연출 팁]** 숏폼 랭킹 그래프 애니메이션 및 인기 릴스 화면 스크롤
+- **[CTA]** "마케팅 트렌드 카드뉴스를 매주 받아보고 싶다면 팔로우 부탁드립니다!"
+""",
     },
     {
-        'id': 3,
-        'title': '유튜브, 크리에이터를 위한 AI 자동 번역 및 자막 지원 도구 출시',
+        'id': 4,
+        'category': '마케팅 동향',
+        'title': '유튜브, 크리에이터 전용 AI 다국어 자동 더빙 및 자막 출시',
         'published_at': '2026-08-04 14:15',
         'source_name': 'TechCrunch',
         'source_url': 'https://techcrunch.com',
         'crawled_from': '구글 뉴스 RSS',
-        'summary': '유튜브가 다국어 오디오 더빙 및 실시간 번역 자막 생성 기능을 모든 파트너 크리에이터에게 확대 적용하기로 결정함.',
-        'ai_script': '이제 언어 장벽 없이 전 세계 구독자를 만날 수 있습니다! 유튜브가 새로 공개한 AI 다국어 도구의 주요 기능을 핵심 정리해 드립니다.',
+        'summary': '유튜브가 다국어 오디오 더빙 및 실시간 번역 자막 기능을 모든 파트너 크리에이터에게 확대 적용함.',
+        'sns_script': """🤖 **[릴스/숏츠 대본 파이프라인]**
+- **[Hooking 멘트]** "영어 못해도 전 세계 유튜브 1등이 될 수 있는 시대가 왔습니다!"
+- **[본문 자막 & 오디오]**
+  "유튜브가 새롭게 선보인 AI 자동 더빙 도구 덕분인데요. 클릭 몇 번으로 내 목소리 톤 그대로 스페인어, 일본어 더빙이 완성된다고 합니다."
+- **[화면 연출 팁]** 언어가 시시각각 전환되는 유튜버 영상 시연 화면
+- **[CTA]** "이제 크리에이터분들 해외 진출 준비하셔야겠죠? 저장해 두고 나중에 다시 보세요!"
+""",
     },
     {
-        'id': 4,
-        'title': '버추얼 인플루언서 C, 라이브 커머스 첫 진출서 완판 기록',
+        'category': '긍정이슈',
+        'id': 5,
+        'title': '버추얼 인플루언서 C, 라이브 커머스 첫 진출 10분 만에 완판',
         'published_at': '2026-08-03 21:00',
         'source_name': '전자신문',
         'source_url': 'https://news.naver.com',
         'crawled_from': '네이버 뉴스 API',
-        'summary': '3D 렌더링 기반 버추얼 크리에이터 C가 진행한 라이브 커머스 방송에서 준비 수량 5,000개가 10분 만에 매진됨.',
-        'ai_script': '버추얼 인플루언서가 이제 방송 진행과 물건 판매까지 능숙하게 해냅니다! 첫 라이브 쇼핑에서 완판을 달성한 버추얼 C의 성공 비결은 무엇일까요?',
-    },
-    {
-        'id': 5,
-        'title': '치솟는 크리에이터 광고 단가... 기업들의 대응 전략은?',
-        'published_at': '2026-08-03 11:45',
-        'source_name': '아이뉴스24',
-        'source_url': 'https://news.naver.com',
-        'crawled_from': '구글 뉴스 RSS',
-        'summary': '마이크로 인플루언서 중심의 효율적 분산 협업이 늘어남에 따라 대형 크리에이터 단가 인상에 대한 대안책 마련이 활발해짐.',
-        'ai_script': '인플루언서 협업 비용 증가로 고민하는 마케터라면 주목하세요! 가성비와 진정성을 모두 챙기는 마이크로 인플루언서 마케팅 전략을 살펴봅니다.',
+        'summary': '3D 버추얼 크리에이터 C가 진행한 첫 라이브 쇼핑 방송에서 준비 수량 5,000개가 전량 매진됨.',
+        'sns_script': """✨ **[릴스/숏츠 대본 파이프라인]**
+- **[Hooking 멘트]** "진짜 사람보다 물건을 더 잘 파는 버추얼 인플루언서가 나타났다?!"
+- **[본문 자막 & 오디오]**
+  "버추얼 아티스트 C가 진행한 라이브 커머스에서 단 10분 만에 5천 개 제품이 완전 매진됐습니다. 실시간 Q&A 대응까지 진짜 사람처럼 매끄러웠다고 하네요."
+- **[화면 연출 팁]** 버추얼 C의 버츄얼 방송 모션 캡처 영상 하이라이트
+- **[CTA]** "앞으로 쇼호스트 직업도 버추얼이 대체할까요? 여러분의 의견을 남겨주세요!"
+""",
     },
 ]
 
 # ------------------------------------------------------------------
+# 사이드바 카테고리 필터 설정
+# ------------------------------------------------------------------
+st.sidebar.header('🔍 뉴스 카테고리 필터')
+categories = ['전체보기', '긍정이슈', '부정이슈', '마케팅 동향']
+selected_category = st.sidebar.selectbox('원하는 카테고리를 선택하세요', categories)
+
+# 필터링 적용
+if selected_category != '전체보기':
+    filtered_items = [
+        item for item in news_items if item['category'] == selected_category
+    ]
+else:
+    filtered_items = news_items
+
+st.sidebar.markdown('---')
+st.sidebar.write(f'총 **{len(filtered_items)}개**의 뉴스가 표시 중입니다.')
+
+# ------------------------------------------------------------------
 # 뉴스 카드 UI 구성
 # ------------------------------------------------------------------
-for item in news_items:
-    st.subheader(f"[{item['id']}] {item['title']}")
+for item in filtered_items:
+    # 카테고리별 배지 스타일
+    category_emoji = {
+        '긍정이슈': '🟢 [긍정이슈]',
+        '부정이슈': '🔴 [부정이슈]',
+        '마케팅 동향': '🔵 [마케팅 동향]',
+    }
+    cat_tag = category_emoji.get(item['category'], '')
 
-    # 1. 발행일시, 출처 언론사, 원본 링크, 수집처 메타 정보 표시
+    st.subheader(f"{cat_tag} [{item['id']}] {item['title']}")
+
+    # 발행일시, 출처 언론사, 원본 링크, 수집처 메타 정보
     col_info1, col_info2, col_info3 = st.columns([2, 2, 3])
     with col_info1:
         st.markdown(f"🗓️ **발행 일시:** {item['published_at']}")
@@ -104,14 +165,15 @@ for item in news_items:
         st.markdown(f"🌐 **수집 플랫폼:** `{item['crawled_from']}`")
     with col_info3:
         st.markdown(
-            f"🔗 **출처:** [{item['source_name']} 원본 기사 보기]({item['source_url']})"
+            f"🔗 **출처:** [{item['source_name']} 원본 기사]({item['source_url']})"
         )
 
-    # 요약 및 AI 대본 영역
-    st.markdown(f"**📝 뉴스 요약:** {item['summary']}")
+    # 뉴스 요약
+    st.markdown(f"**📝 기사 핵심 요약:** {item['summary']}")
 
-    with st.expander('🎬 생성된 AI 뉴스 대본 확인하기'):
-        st.write(item['ai_script'])
+    # SNS 콘텐츠용 AI 대본
+    with st.expander('🎬 SNS (릴스/숏츠/틱톡) 콘텐츠용 AI 대본 보기', expanded=True):
+        st.markdown(item['sns_script'])
 
     # 팀원 피드백 입력 폼
     with st.form(key=f"feedback_form_{item['id']}"):
@@ -121,16 +183,16 @@ for item in news_items:
             reviewer_name = st.text_input('검수자 이름', key=f"name_{item['id']}")
         with col2:
             rating = st.slider(
-                '대본 평가 점수 (1~5점)', 1, 5, 5, key=f"rating_{item['id']}"
+                'SNS 대본 평가 점수 (1~5점)', 1, 5, 5, key=f"rating_{item['id']}"
             )
 
         feedback_text = st.text_area(
-            '피드백 및 수정 제안',
-            placeholder='대본의 톤앤매너, 사실관계 수정사항 등을 작성해주세요.',
+            'SNS 대본 수정 및 피드백',
+            placeholder='Hooking 멘트 수정, 톤앤매너 개선, 화면 연출 아이디어 등을 입력하세요.',
             key=f"text_{item['id']}",
         )
 
-        submit_button = st.form_submit_button('피드백 저장')
+        submit_button = st.form_submit_button('피드백 제출')
 
         if submit_button:
             if not reviewer_name.strip():
@@ -138,11 +200,8 @@ for item in news_items:
             else:
                 feedback_data = {
                     'news_id': item['id'],
+                    'category': item['category'],
                     'news_title': item['title'],
-                    'published_at': item['published_at'],
-                    'source_name': item['source_name'],
-                    'source_url': item['source_url'],
-                    'crawled_from': item['crawled_from'],
                     'reviewer_name': reviewer_name,
                     'rating': rating,
                     'feedback': feedback_text,
