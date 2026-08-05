@@ -1,8 +1,13 @@
 import json
 import os
+import re
 from datetime import datetime
+import urllib.parse
+import urllib.request
 import pandas as pd
+import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 
 # 피드백 저장 파일 설정
 FEEDBACK_FILE = 'feedback_db.json'
@@ -24,198 +29,297 @@ def save_feedback(data):
         json.dump(feedback_list, f, ensure_ascii=False, indent=4)
 
 
-# 페이지 기본 설정
+# HTML 태그 제거 및 텍스트 정제 함수
+def clean_html(text):
+    cleanr = re.compile('<.*?>|&quot;|&amp;|&lt;|&gt;')
+    cleantext = re.sub(cleanr, '', text)
+    return cleantext
+
+
+# 네이버 뉴스 API 수집 함수
+def fetch_naver_news_api(keyword, display_count, client_id, client_secret):
+    encText = urllib.parse.quote(keyword)
+    url = f'https://openapi.naver.com/v1/search/news.json?query={encText}&display={display_count}&sort=date'
+
+    request = urllib.request.Request(url)
+    request.add_header('X-Naver-Client-Id', client_id)
+    request.add_header('X-Naver-Client-Secret', client_secret)
+
+    try:
+        response = urllib.request.urlopen(request)
+        rescode = response.getcode()
+        if rescode == 200:
+            response_body = response.read()
+            result = json.loads(response_body.decode('utf-8'))
+            items = []
+            for idx, item in enumerate(result.get('items', []), 1):
+                title = clean_html(item['title'])
+                summary = clean_html(item['description'])
+                link = (
+                    item['originallink']
+                    if item['originallink']
+                    else item['link']
+                )
+
+                # 카테고리 자동 분류 규칙
+                category = '마케팅 동향'
+                if any(
+                    w in title or w in summary
+                    for w in ['논란', '의혹', '사과', '피소', '뒷광고', '제재', '폭로']
+                ):
+                    category = '부정이슈'
+                elif any(
+                    w in title or w in summary
+                    for w in [
+                        '협업',
+                        '대박',
+                        '완판',
+                        '돌파',
+                        '선행',
+                        '기부',
+                        '수상',
+                        '화제',
+                    ]
+                ):
+                    category = '긍정이슈'
+
+                items.append({
+                    'id': idx,
+                    'category': category,
+                    'title': title,
+                    'published_at': item.get('pubDate', '')[:25],
+                    'source_name': '네이버 뉴스 연동',
+                    'source_url': link,
+                    'crawled_from': '네이버 뉴스 API (실시간)',
+                    'summary': summary,
+                    'sns_script': generate_sns_script(
+                        title, summary, category
+                    ),
+                })
+            return items
+    except Exception as e:
+        st.error(f'네이버 API 호출 중 오류 발생: {e}')
+        return []
+
+
+# 네이버 뉴스 RSS 수집 함수 (API Key 없을 때 Fallback)
+def fetch_naver_news_rss(keyword, display_count=5):
+    encText = urllib.parse.quote(keyword)
+    url = f'https://news.google.com/rss/search?q={encText}&hl=ko&gl=KR&ceid=KR:ko'
+
+    try:
+        res = requests.get(url, timeout=5)
+        soup = BeautifulSoup(res.text, 'xml')
+        items_xml = soup.find_all('item')[:display_count]
+
+        items = []
+        for idx, item in enumerate(items_xml, 1):
+            title = item.title.text if item.title else '제목 없음'
+            link = item.link.text if item.link else '#'
+            pub_date = item.pubDate.text if item.pubDate else ''
+            summary = (
+                BeautifulSoup(item.description.text, 'html.parser').text
+                if item.description
+                else title
+            )
+
+            category = '마케팅 동향'
+            if any(
+                w in title or w in summary
+                for w in ['논란', '의혹', '사과', '피소', '뒷광고', '제재', '폭로']
+            ):
+                category = '부정이슈'
+            elif any(
+                w in title or w in summary
+                for w in [
+                    '협업',
+                    '대박',
+                    '완판',
+                    '돌파',
+                    '선행',
+                    '기부',
+                    '수상',
+                    '화제',
+                ]
+            ):
+                category = '긍정이슈'
+
+            items.append({
+                'id': idx,
+                'category': category,
+                'title': title,
+                'published_at': pub_date,
+                'source_name': '뉴스 원본',
+                'source_url': link,
+                'crawled_from': '실시간 뉴스 RSS Engine',
+                'summary': summary[:150] + '...'
+                if len(summary) > 150
+                else summary,
+                'sns_script': generate_sns_script(title, summary, category),
+            })
+        return items
+    except Exception as e:
+        st.error(f'뉴스 RSS 수집 중 오류 발생: {e}')
+        return []
+
+
+# SNS 숏폼 대본 자동 생성 로직
+def generate_sns_script(title, summary, category):
+    if category == '부정이슈':
+        return f"""⚠️ **[부정이슈 숏폼 대본 파이프라인]**
+- **[Hooking 멘트]** "지금 인플루언서 시장을 뒤흔든 충격적인 이슈, 알고 계신가요?"
+- **[본문 자막 & 오디오]**
+  "{title[:40]}... 관련 소식입니다. {summary[:80]}..."
+- **[화면 연출 팁]** 뉴스 타이틀 캡처 및 붉은색 강조 자막 연출
+- **[CTA]** "이번 이슈에 대한 여러분의 생각은 어떠신가요? 댓글로 공유해 주세요."
+"""
+    elif category == '긍정이슈':
+        return f"""🔥 **[긍정이슈 숏폼 대본 파이프라인]**
+- **[Hooking 멘트]** "대박 소식! 요즘 가장 핫한 크리에이터의 대단한 행보를 소개합니다."
+- **[본문 자막 & 오디오]**
+  "{title[:40]}! {summary[:80]}..."
+- **[화면 연출 팁]** 화려한 그래픽 효과 및 인플루언서 핵심 사진 배치
+- **[CTA]** "더 자세한 브랜드 협업 소식이 궁금하다면 팔로우와 좋아요 눌러주세요!"
+"""
+    else:
+        return f"""📊 **[마케팅 동향 숏폼 대본 파이프라인]**
+- **[Hooking 멘트]** "트렌드에 뒤처지기 싫은 마케터라면 지금 이 뉴스를 주목하세요!"
+- **[본문 자막 & 오디오]**
+  "{title[:40]}... {summary[:80]}..."
+- **[화면 연출 팁]** 통계 그래프 및 핵심 키워드 텍스트 모션
+- **[CTA]** "트렌드 리포트를 매주 빠르게 받아보고 싶다면 지금 저장해 두세요!"
+"""
+
+
+# Streamlit 페이지 설정
 st.set_page_config(
-    page_title='인플루언서 뉴스 SNS 콘텐츠 큐레이션', layout='wide'
+    page_title='인플루언서 뉴스 실시간 SNS 콘텐츠 큐레이션', layout='wide'
 )
 
-st.title('📱 인플루언서 뉴스 SNS 콘텐츠 큐레이션 & 검수')
-st.caption(
-    '인플루언서 부정이슈 / 긍정이슈 / 마케팅 동향 분류 및 숏폼·SNS 맞춤형 대본 검수 시스템'
+st.title('📱 실시간 인플루언서 뉴스 SNS 콘텐츠 큐레이션 시스템')
+st.caption('실시간 라이브 뉴스 자동 수집 | 카테고리 분류 | SNS 숏폼 대본 생성 및 팀 검수 파이프라인')
+
+# ------------------------------------------------------------------
+# 사이드바 : 수집 설정 & 검색 조건
+# ------------------------------------------------------------------
+st.sidebar.header('⚙️ 실시간 뉴스 수집 설정')
+
+keyword = st.sidebar.text_input(
+    '검색 키워드', value='인플루언서', help='예: 인플루언서, 유튜버, 숏폼 마케팅'
+)
+display_count = st.sidebar.slider('수집할 뉴스 수량', 3, 15, 5)
+
+st.sidebar.markdown('---')
+st.sidebar.subheader('🔑 네이버 API 설정 (선택)')
+client_id = st.sidebar.text_input('Client ID', type='password')
+client_secret = st.sidebar.text_input('Client Secret', type='password')
+
+st.sidebar.markdown('---')
+st.sidebar.header('🔍 카테고리 필터')
+category_filter = st.sidebar.selectbox(
+    '카테고리 선택', ['전체보기', '긍정이슈', '부정이슈', '마케팅 동향']
 )
 
-# ------------------------------------------------------------------
-# 샘플 데이터 (카테고리 분류 및 SNS 콘텐츠용 대본 적용)
-# ------------------------------------------------------------------
-news_items = [
-    {
-        'id': 1,
-        'category': '긍정이슈',
-        'title': '인플루언서 A, 브랜드 B와 대규모 글로벌 컬래버레이션 발표',
-        'published_at': '2026-08-05 09:00',
-        'source_name': '매일경제',
-        'source_url': 'https://news.naver.com',
-        'crawled_from': '네이버 뉴스 API',
-        'summary': '인플루언서 A가 글로벌 뷰티 브랜드 B와의 협업 라인을 공개하며 파리 팝업스토어 개최 소식을 발표함.',
-        'sns_script': """🔥 **[릴스/숏츠 대본 파이프라인]**
-- **[Hooking 멘트]** "진짜 미쳤다! 뷰티 유튜버 A가 결국 글로벌 브랜드 B랑 사고를 쳤습니다?!"
-- **[본문 자막 & 오디오]**
-  "파리 현지 팝업스토어 오픈 소식에 해외 팬들 반응까지 난리 났는데요! 이번 뷰티 콜라보 라인은 출시 전부터 완판 예감이라는 소문입니다."
-- **[화면 연출 팁]** A의 파리 팝업 인스타 스토리를 빠르게 교차 편집
-- **[CTA]** "이번 콜라보 제품 정보가 궁금하다면 댓글에 '콜라보'라고 남겨주세요!"
-""",
-    },
-    {
-        'id': 2,
-        'category': '부정이슈',
-        'title': '유명 인플루언서 D, 표기 의무 위반 뒷광고 논란에 사과문 게재',
-        'published_at': '2026-08-04 22:10',
-        'source_name': '디스패치',
-        'source_url': 'https://news.naver.com',
-        'crawled_from': '네이버 뉴스 API',
-        'summary': '구독자 80만의 뷰티 크리에이터 D가 협찬 및 유료광고 표시를 누락한 사실이 밝혀지며 네티즌들의 반발을 사고 있음.',
-        'sns_script': """⚠️ **[릴스/숏츠 대본 파이프라인]**
-- **[Hooking 멘트]** "80만 크리에이터 D가 결국 사과문까지 게재했습니다... 대체 무슨 일일까요?"
-- **[본문 자막 & 오디오]**
-  "최근 업로드된 내돈내산 영상에서 유료 광고 표기를 은폐했다는 의혹이 제기됐는데요, 네티즌들의 피드백이 거세지자 결국 모든 협찬 사실을 인정했습니다."
-- **[화면 연출 팁]** 사과문 캡처 화면 줌인 및 흑백 톤 다운 효과
-- **[CTA]** "여러분은 인플루언서의 뒷광고 논란, 어떻게 생각하시나요? 댓글로 의견을 공유해 주세요."
-""",
-    },
-    {
-        'id': 3,
-        'category': '마케팅 동향',
-        'title': '숏폼 크리에이터 중심의 마케팅 시장, 전년 대비 45% 폭풍 성장',
-        'published_at': '2026-08-04 18:30',
-        'source_name': '한국경제',
-        'source_url': 'https://news.naver.com',
-        'crawled_from': '네이버 뉴스 API',
-        'summary': '틱톡, 인스타 릴스, 유튜브 숏츠 등 숏폼 크리에이터를 활용한 마케팅 집행비가 폭발적으로 증가함.',
-        'sns_script': """📊 **[릴스/숏츠 대본 파이프라인]**
-- **[Hooking 멘트]** "요즘 브랜드 마케터들이 돈을 어디에 다 쓰는지 아시나요?"
-- **[본문 자막 & 오디오]**
-  "무려 전년 대비 45%나 성장한 분야! 바로 숏폼 크리에이터 마케팅입니다. 이젠 롱폼보다 1분 미만 숏폼 협업이 매출을 좌우하고 있다는 분석인데요."
-- **[화면 연출 팁]** 숏폼 랭킹 그래프 애니메이션 및 인기 릴스 화면 스크롤
-- **[CTA]** "마케팅 트렌드 카드뉴스를 매주 받아보고 싶다면 팔로우 부탁드립니다!"
-""",
-    },
-    {
-        'id': 4,
-        'category': '마케팅 동향',
-        'title': '유튜브, 크리에이터 전용 AI 다국어 자동 더빙 및 자막 출시',
-        'published_at': '2026-08-04 14:15',
-        'source_name': 'TechCrunch',
-        'source_url': 'https://techcrunch.com',
-        'crawled_from': '구글 뉴스 RSS',
-        'summary': '유튜브가 다국어 오디오 더빙 및 실시간 번역 자막 기능을 모든 파트너 크리에이터에게 확대 적용함.',
-        'sns_script': """🤖 **[릴스/숏츠 대본 파이프라인]**
-- **[Hooking 멘트]** "영어 못해도 전 세계 유튜브 1등이 될 수 있는 시대가 왔습니다!"
-- **[본문 자막 & 오디오]**
-  "유튜브가 새롭게 선보인 AI 자동 더빙 도구 덕분인데요. 클릭 몇 번으로 내 목소리 톤 그대로 스페인어, 일본어 더빙이 완성된다고 합니다."
-- **[화면 연출 팁]** 언어가 시시각각 전환되는 유튜버 영상 시연 화면
-- **[CTA]** "이제 크리에이터분들 해외 진출 준비하셔야겠죠? 저장해 두고 나중에 다시 보세요!"
-""",
-    },
-    {
-        'category': '긍정이슈',
-        'id': 5,
-        'title': '버추얼 인플루언서 C, 라이브 커머스 첫 진출 10분 만에 완판',
-        'published_at': '2026-08-03 21:00',
-        'source_name': '전자신문',
-        'source_url': 'https://news.naver.com',
-        'crawled_from': '네이버 뉴스 API',
-        'summary': '3D 버추얼 크리에이터 C가 진행한 첫 라이브 쇼핑 방송에서 준비 수량 5,000개가 전량 매진됨.',
-        'sns_script': """✨ **[릴스/숏츠 대본 파이프라인]**
-- **[Hooking 멘트]** "진짜 사람보다 물건을 더 잘 파는 버추얼 인플루언서가 나타났다?!"
-- **[본문 자막 & 오디오]**
-  "버추얼 아티스트 C가 진행한 라이브 커머스에서 단 10분 만에 5천 개 제품이 완전 매진됐습니다. 실시간 Q&A 대응까지 진짜 사람처럼 매끄러웠다고 하네요."
-- **[화면 연출 팁]** 버추얼 C의 버츄얼 방송 모션 캡처 영상 하이라이트
-- **[CTA]** "앞으로 쇼호스트 직업도 버추얼이 대체할까요? 여러분의 의견을 남겨주세요!"
-""",
-    },
-]
+# 뉴스 수집 실행 버튼
+fetch_button = st.sidebar.button('🔄 실시간 최신 뉴스 수집하기', use_container_width=True)
 
 # ------------------------------------------------------------------
-# 사이드바 카테고리 필터 설정
+# 뉴스 데이터 수집 수행
 # ------------------------------------------------------------------
-st.sidebar.header('🔍 뉴스 카테고리 필터')
-categories = ['전체보기', '긍정이슈', '부정이슈', '마케팅 동향']
-selected_category = st.sidebar.selectbox('원하는 카테고리를 선택하세요', categories)
+if 'news_data' not in st.session_state or fetch_button:
+    with st.spinner(f"'{keyword}' 관련 실시간 최신 뉴스를 수집 중입니다..."):
+        if client_id and client_secret:
+            st.session_state.news_data = fetch_naver_news_api(
+                keyword, display_count, client_id, client_secret
+            )
+        else:
+            st.session_state.news_data = fetch_naver_news_rss(
+                keyword, display_count
+            )
 
-# 필터링 적용
-if selected_category != '전체보기':
+news_items = st.session_state.get('news_data', [])
+
+# 카테고리 필터링
+if category_filter != '전체보기':
     filtered_items = [
-        item for item in news_items if item['category'] == selected_category
+        item for item in news_items if item['category'] == category_filter
     ]
 else:
     filtered_items = news_items
 
-st.sidebar.markdown('---')
-st.sidebar.write(f'총 **{len(filtered_items)}개**의 뉴스가 표시 중입니다.')
+st.sidebar.write(f'현재 표시 중인 뉴스: **{len(filtered_items)}개**')
 
 # ------------------------------------------------------------------
 # 뉴스 카드 UI 구성
 # ------------------------------------------------------------------
-for item in filtered_items:
-    # 카테고리별 배지 스타일
-    category_emoji = {
-        '긍정이슈': '🟢 [긍정이슈]',
-        '부정이슈': '🔴 [부정이슈]',
-        '마케팅 동향': '🔵 [마케팅 동향]',
-    }
-    cat_tag = category_emoji.get(item['category'], '')
+if not filtered_items:
+    st.info('수집된 뉴스가 없거나 필터 조건에 맞는 뉴스가 없습니다.')
+else:
+    for item in filtered_items:
+        category_emoji = {
+            '긍정이슈': '🟢 [긍정이슈]',
+            '부정이슈': '🔴 [부정이슈]',
+            '마케팅 동향': '🔵 [마케팅 동향]',
+        }
+        cat_tag = category_emoji.get(item['category'], '')
 
-    st.subheader(f"{cat_tag} [{item['id']}] {item['title']}")
+        st.subheader(f"{cat_tag} [{item['id']}] {item['title']}")
 
-    # 발행일시, 출처 언론사, 원본 링크, 수집처 메타 정보
-    col_info1, col_info2, col_info3 = st.columns([2, 2, 3])
-    with col_info1:
-        st.markdown(f"🗓️ **발행 일시:** {item['published_at']}")
-    with col_info2:
-        st.markdown(f"🌐 **수집 플랫폼:** `{item['crawled_from']}`")
-    with col_info3:
-        st.markdown(
-            f"🔗 **출처:** [{item['source_name']} 원본 기사]({item['source_url']})"
-        )
-
-    # 뉴스 요약
-    st.markdown(f"**📝 기사 핵심 요약:** {item['summary']}")
-
-    # SNS 콘텐츠용 AI 대본
-    with st.expander('🎬 SNS (릴스/숏츠/틱톡) 콘텐츠용 AI 대본 보기', expanded=True):
-        st.markdown(item['sns_script'])
-
-    # 팀원 피드백 입력 폼
-    with st.form(key=f"feedback_form_{item['id']}"):
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            reviewer_name = st.text_input('검수자 이름', key=f"name_{item['id']}")
-        with col2:
-            rating = st.slider(
-                'SNS 대본 평가 점수 (1~5점)', 1, 5, 5, key=f"rating_{item['id']}"
+        col_info1, col_info2, col_info3 = st.columns([2, 2, 3])
+        with col_info1:
+            st.markdown(f"🗓️ **발행 일시:** {item['published_at']}")
+        with col_info2:
+            st.markdown(f"🌐 **수집 엔진:** `{item['crawled_from']}`")
+        with col_info3:
+            st.markdown(
+                f"🔗 **출처:** [{item['source_name']} 실제 원본 기사 읽기]({item['source_url']})"
             )
 
-        feedback_text = st.text_area(
-            'SNS 대본 수정 및 피드백',
-            placeholder='Hooking 멘트 수정, 톤앤매너 개선, 화면 연출 아이디어 등을 입력하세요.',
-            key=f"text_{item['id']}",
-        )
+        st.markdown(f"**📝 기사 요약:** {item['summary']}")
 
-        submit_button = st.form_submit_button('피드백 제출')
+        with st.expander('🎬 자동 생성된 SNS 숏폼 대본 확인하기', expanded=True):
+            st.markdown(item['sns_script'])
 
-        if submit_button:
-            if not reviewer_name.strip():
-                st.warning('검수자 이름을 입력해주세요.')
-            else:
-                feedback_data = {
-                    'news_id': item['id'],
-                    'category': item['category'],
-                    'news_title': item['title'],
-                    'reviewer_name': reviewer_name,
-                    'rating': rating,
-                    'feedback': feedback_text,
-                    'submitted_at': datetime.now().strftime(
-                        '%Y-%m-%d %H:%M:%S'
-                    ),
-                }
-                save_feedback(feedback_data)
-                st.success('피드백이 성공적으로 저장되었습니다!')
+        with st.form(key=f"feedback_form_{item['id']}"):
+            col1, col2 = st.columns([1, 1])
 
-    st.divider()
+            with col1:
+                reviewer_name = st.text_input('검수자 이름', key=f"name_{item['id']}")
+            with col2:
+                rating = st.slider(
+                    'SNS 대본 평가 점수 (1~5점)', 1, 5, 5, key=f"rating_{item['id']}"
+                )
+
+            feedback_text = st.text_area(
+                'SNS 대본 수정 및 피드백',
+                placeholder='Hooking 멘트 수정, 톤앤매너 개선, 화면 연출 아이디어 등을 입력하세요.',
+                key=f"text_{item['id']}",
+            )
+
+            submit_button = st.form_submit_button('피드백 제출')
+
+            if submit_button:
+                if not reviewer_name.strip():
+                    st.warning('검수자 이름을 입력해주세요.')
+                else:
+                    feedback_data = {
+                        'news_id': item['id'],
+                        'category': item['category'],
+                        'news_title': item['title'],
+                        'reviewer_name': reviewer_name,
+                        'rating': rating,
+                        'feedback': feedback_text,
+                        'submitted_at': datetime.now().strftime(
+                            '%Y-%m-%d %H:%M:%S'
+                        ),
+                    }
+                    save_feedback(feedback_data)
+                    st.success('피드백이 성공적으로 저장되었습니다!')
+
+        st.divider()
 
 # ------------------------------------------------------------------
-# 저장된 피드백 대시보드 (하단)
+# 저장된 피드백 대시보드
 # ------------------------------------------------------------------
 st.header('📊 팀 피드백 수집 현황')
 
