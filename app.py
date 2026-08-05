@@ -101,7 +101,7 @@ def fetch_naver_news_api(keyword, display_count, client_id, client_secret):
         return []
 
 
-# 구글 뉴스 RSS 수집 함수 (기본 내장 html.parser 적용)
+# 실시간 뉴스 RSS 수집 함수 (URL 링크 완전 보정 처리 적용)
 def fetch_naver_news_rss(keyword, display_count=5):
     encText = urllib.parse.quote(keyword)
     url = f'https://news.google.com/rss/search?q={encText}&hl=ko&gl=KR&ceid=KR:ko'
@@ -114,7 +114,19 @@ def fetch_naver_news_rss(keyword, display_count=5):
         items = []
         for idx, item in enumerate(items_xml, 1):
             title = item.title.text if item.title else '제목 없음'
-            link = item.link.text if item.link else '#'
+
+            # ----------------------------------------------------
+            # 원본 뉴스 기사 링크 보정 (Streamlit 자기 자신으로 이동하지 않도록 처리)
+            # ----------------------------------------------------
+            raw_link = item.link.text if item.link else '#'
+            if raw_link.startswith('./'):
+                link = raw_link.replace('./', 'https://news.google.com/')
+            elif not raw_link.startswith('http'):
+                link = f'https://news.google.com/{raw_link}'
+            else:
+                link = raw_link
+            # ----------------------------------------------------
+
             pub_date = item.pubdate.text if item.pubdate else ''
             summary = (
                 BeautifulSoup(
