@@ -61,7 +61,6 @@ def fetch_naver_news_api(keyword, display_count, client_id, client_secret):
                     else item['link']
                 )
 
-                # 카테고리 자동 분류 규칙
                 category = '마케팅 동향'
                 if any(
                     w in title or w in summary
@@ -102,23 +101,25 @@ def fetch_naver_news_api(keyword, display_count, client_id, client_secret):
         return []
 
 
-# 네이버 뉴스 RSS 수집 함수 (API Key 없을 때 Fallback)
+# 구글 뉴스 RSS 수집 함수 (기본 내장 html.parser 적용)
 def fetch_naver_news_rss(keyword, display_count=5):
     encText = urllib.parse.quote(keyword)
     url = f'https://news.google.com/rss/search?q={encText}&hl=ko&gl=KR&ceid=KR:ko'
 
     try:
         res = requests.get(url, timeout=5)
-        soup = BeautifulSoup(res.text, 'xml')
+        soup = BeautifulSoup(res.text, 'html.parser')
         items_xml = soup.find_all('item')[:display_count]
 
         items = []
         for idx, item in enumerate(items_xml, 1):
             title = item.title.text if item.title else '제목 없음'
             link = item.link.text if item.link else '#'
-            pub_date = item.pubDate.text if item.pubDate else ''
+            pub_date = item.pubdate.text if item.pubdate else ''
             summary = (
-                BeautifulSoup(item.description.text, 'html.parser').text
+                BeautifulSoup(
+                    item.description.text, 'html.parser'
+                ).text.strip()
                 if item.description
                 else title
             )
@@ -220,7 +221,6 @@ category_filter = st.sidebar.selectbox(
     '카테고리 선택', ['전체보기', '긍정이슈', '부정이슈', '마케팅 동향']
 )
 
-# 뉴스 수집 실행 버튼
 fetch_button = st.sidebar.button('🔄 실시간 최신 뉴스 수집하기', use_container_width=True)
 
 # ------------------------------------------------------------------
