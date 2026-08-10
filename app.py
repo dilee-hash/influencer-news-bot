@@ -44,30 +44,49 @@ def clean_html(text):
     return re.sub(cleanr, "", text).strip()
 
 
-def is_similar_title(title1, title2, threshold=0.65):
-    """두 제목 간의 유사도를 판별하여 중복 여부 확인 (기본 65% 이상이면 같은 기사로 인식)"""
-    t1 = re.sub(r"[^\w\s]", "", title1).replace(" ", "")
-    t2 = re.sub(r"[^\w\s]", "", title2).replace(" ", "")
+def clean_title_for_comparison(title):
+    """중복 비교를 위해 언론사명, [속보], [단독] 등 불필요한 태그 제거"""
+    title = re.sub(r"\[.*?\]|\(.*?\)", "", title)  # [단독], (속보) 등 제거
+    if " - " in title:
+        title = title.rsplit(" - ", 1)[0]  # 뒤쪽 언론사명 제거
+    # 특수문자 제거 및 공백 정렬
+    title = re.sub(r"[^\w\s]", "", title).replace(" ", "")
+    return title
+
+
+def is_similar_title(title1, title2, threshold=0.55):
+    """순수 제목 유사도가 55% 이상이면 동일한 이슈로 판단"""
+    t1 = clean_title_for_comparison(title1)
+    t2 = clean_title_for_comparison(title2)
     return SequenceMatcher(None, t1, t2).ratio() >= threshold
 
 
 def categorize_article(title, summary):
-    """사용자 지정 기준에 따른 정밀 카테고리 분류"""
+    """사법/법적 키워드까지 포함한 정밀 카테고리 분류"""
     text = f"{title} {summary}"
 
-    # 1. 부정이슈 (부정적 이미지 관련 뉴스)
+    # 1. 부정이슈 (법적/사법/부정적 이미지 관련 강력 키워드)
     negative_keywords = [
+        "검찰",
+        "송치",
+        "명예훼손",
+        "경찰",
+        "조사",
+        "입건",
+        "피소",
+        "고소",
+        "재판",
+        "벌금",
+        "구속",
+        "피의자",
         "논란",
         "의혹",
         "사과",
-        "피소",
-        "고소",
         "뒷광고",
         "제재",
         "폭로",
         "탈세",
         "비판",
-        "구속",
         "해명",
         "피해",
         "사기",
@@ -75,6 +94,8 @@ def categorize_article(title, summary):
         "리스크",
         "악플",
         "경고",
+        "유죄",
+        "혐의",
     ]
     if any(kw in text for kw in negative_keywords):
         return "부정이슈"
@@ -85,8 +106,9 @@ def categorize_article(title, summary):
         "기부",
         "미담",
         "선한영향력",
+        "선한 영향력",
         "봉사",
-        "기증",  # 선한 영향력
+        "기증",
         "인기",
         "대박",
         "완판",
@@ -97,17 +119,17 @@ def categorize_article(title, summary):
         "급상승",
         "트렌딩",
         "열풍",
-        "히트",  # 인기 몰이
+        "히트",
+        "성공",
     ]
     if any(kw in text for kw in positive_keywords):
         return "긍정이슈"
 
-    # 3. 마케팅 동향 (기본값: 마켓 시장 및 인플루언서를 활용한 마케팅)
+    # 3. 마케팅 동향 (마켓 시장, 플랫폼 및 인플루언서 마케팅)
     return "마케팅 동향"
 
 
 def fetch_raw_news(selected_channels, keyword):
-    """전체 기사를 수집하는 함수"""
     raw_items = []
     headers = {
         "User-Agent": (
@@ -131,14 +153,15 @@ def fetch_raw_news(selected_channels, keyword):
                 channel = root.find("channel")
                 if channel is not None:
                     for entry in channel.findall("item"):
-                        title = (
+                        raw_title = (
                             clean_html(entry.find("title").text)
                             if entry.find("title") is not None
                             else ""
                         )
                         source_name = "구글 뉴스"
-                        if " - " in title:
-                            parts = title.rsplit(" - ", 1)
+                        title = raw_title
+                        if " - " in raw_title:
+                            parts = raw_title.rsplit(" - ", 1)
                             title = parts[0]
                             source_name = parts[1]
 
@@ -173,19 +196,17 @@ def fetch_raw_news(selected_channels, keyword):
 
 
 def process_grouped_news(selected_channels, keyword, display_count=5):
-    """문자열 유사도 기반 중복 제거 및 발행 수 집계/정렬"""
     raw_items = fetch_raw_news(selected_channels, keyword)
 
     if not raw_items:
         return []
 
-    # 1. 유사도 기반 그룹화
-    clusters = []  # [{'main': item, 'count': 1, 'items': [...]}]
+    # 정밀 유사도 그룹화
+    clusters = []
 
     for item in raw_items:
         matched = False
         for cluster in clusters:
-            # 기존 그룹 대표 기사 제목과 비교
             if is_similar_title(item["title"], cluster["main"]["title"]):
                 cluster["count"] += 1
                 cluster["items"].append(item)
@@ -195,14 +216,14 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
         if not matched:
             clusters.append({"main": item, "count": 1, "items": [item]})
 
-    # 2. 결과 데이터 생성
     processed_items = []
     for cluster in clusters:
         main_item = cluster["main"]
         article_count = cluster["count"]
-        category = categorize_article(
-            main_item["title"], main_item["summary"]
-        )
+
+        # 전체 관련 기사 텍스트를 종합하여 정밀 카테고리 분석
+        combined_text = " ".join([i["title"] for i in cluster["items"]])
+        category = categorize_article(combined_text, main_item["summary"])
 
         summary = main_item["summary"]
         processed_items.append({
@@ -218,7 +239,7 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             ),
         })
 
-    # 3. 발행 수(article_count) 순으로 정렬 (많은 순서대로)
+    # 관련 기사 수(article_count) 순 내림차순 정렬
     processed_items.sort(key=lambda x: x["article_count"], reverse=True)
 
     for idx, item in enumerate(processed_items, start=1):
@@ -229,31 +250,31 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
 
 def generate_sns_script(title, summary, category, article_count):
     hot_text = (
-        f" (현재 {article_count}개 매체 집중 보도 중!)"
+        f" (현재 {article_count}개 매체 보도 중!)"
         if article_count > 1
         else ""
     )
 
     if category == "부정이슈":
         return f"""⚠️ **[부정이슈 숏폼 대본]**
-- **[Hooking]** "최근 이슈가 되고 있는 인플루언서 부정적 소식입니다.{hot_text}"
+- **[Hooking]** "최근 논란이 되고 있는 인플루언서 이슈 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 보도자료 캡처 및 경고 자막 연출
-- **[CTA]** "이번 이슈에 관한 생각이나 의견을 댓글로 나눠주세요."
+- **[연출]** 보도 기사 헤드라인 캡처 및 경고 자막 연출
+- **[CTA]** "이번 이슈에 대한 여러분의 의견을 댓글로 남겨주세요."
 """
     elif category == "긍정이슈":
         return f"""🔥 **[긍정이슈/인기 숏폼 대본]**
-- **[Hooking]** "선한 영향력과 화제의 중심! 주목할 만한 소식입니다.{hot_text}"
+- **[Hooking]** "선한 영향력과 화제의 중심! 주목받는 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}! {summary[:70]}..."
-- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 효과
+- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 모션
 - **[CTA]** "더 많은 유익한 인플루언서 트렌드는 팔로우해서 받아보세요!"
 """
     else:
         return f"""📊 **[마케팅 동향 숏폼 대본]**
-- **[Hooking]** "마케터와 브랜드가 주목해야 할 인플루언서 마켓 시장 트렌드!"
+- **[Hooking]** "마케터와 브랜드가 꼭 알아야 할 인플루언서 마켓 트렌드!"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
 - **[연출]** 핵심 키워드 강조 및 모션 인포그래픽
-- **[CTA]** "마케팅 인사이트가 필요할 때 보려면 저장해 두세요!"
+- **[CTA]** "인사이트 저장은 필수!"
 """
 
 
@@ -263,7 +284,7 @@ st.set_page_config(
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
 st.caption(
-    "정밀 유사도 중복 제거 | 화제성(발행 수) 정렬 | 세분화된 카테고리 분류"
+    "정밀 유사도 중복 제거 | 화제성(발행 수) 정렬 | 법적/사법 이슈 정밀 카테고리 분류"
 )
 
 st.sidebar.header("⚙️ 수집 조건 설정")
