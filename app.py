@@ -1,4 +1,5 @@
 from collections import defaultdict
+from difflib import SequenceMatcher
 import json
 import os
 import re
@@ -43,14 +44,69 @@ def clean_html(text):
     return re.sub(cleanr, "", text).strip()
 
 
-def normalize_title(title):
-    """제목의 핵심 단어만 추출하여 유사 기사 그룹화 키 생성"""
-    cleaned = re.sub(r"[^\w\s]", "", title)
-    words = cleaned.split()[:5]  # 상위 5개 주요 단어로 그룹화
-    return " ".join(words)
+def is_similar_title(title1, title2, threshold=0.65):
+    """두 제목 간의 유사도를 판별하여 중복 여부 확인 (기본 65% 이상이면 같은 기사로 인식)"""
+    t1 = re.sub(r"[^\w\s]", "", title1).replace(" ", "")
+    t2 = re.sub(r"[^\w\s]", "", title2).replace(" ", "")
+    return SequenceMatcher(None, t1, t2).ratio() >= threshold
 
 
-def fetch_raw_news(selected_channels, keyword, raw_count=50):
+def categorize_article(title, summary):
+    """사용자 지정 기준에 따른 정밀 카테고리 분류"""
+    text = f"{title} {summary}"
+
+    # 1. 부정이슈 (부정적 이미지 관련 뉴스)
+    negative_keywords = [
+        "논란",
+        "의혹",
+        "사과",
+        "피소",
+        "고소",
+        "뒷광고",
+        "제재",
+        "폭로",
+        "탈세",
+        "비판",
+        "구속",
+        "해명",
+        "피해",
+        "사기",
+        "징계",
+        "리스크",
+        "악플",
+        "경고",
+    ]
+    if any(kw in text for kw in negative_keywords):
+        return "부정이슈"
+
+    # 2. 긍정이슈 (선한 영향력, 인기 몰이)
+    positive_keywords = [
+        "선행",
+        "기부",
+        "미담",
+        "선한영향력",
+        "봉사",
+        "기증",  # 선한 영향력
+        "인기",
+        "대박",
+        "완판",
+        "돌파",
+        "수상",
+        "화제",
+        "1위",
+        "급상승",
+        "트렌딩",
+        "열풍",
+        "히트",  # 인기 몰이
+    ]
+    if any(kw in text for kw in positive_keywords):
+        return "긍정이슈"
+
+    # 3. 마케팅 동향 (기본값: 마켓 시장 및 인플루언서를 활용한 마케팅)
+    return "마케팅 동향"
+
+
+def fetch_raw_news(selected_channels, keyword):
     """전체 기사를 수집하는 함수"""
     raw_items = []
     headers = {
@@ -59,7 +115,6 @@ def fetch_raw_news(selected_channels, keyword, raw_count=50):
         )
     }
 
-    # 1. 구글 뉴스 수집
     if "🌐 인플루언서/크리에이터 종합 (Google News)" in selected_channels:
         query = (
             f"인플루언서 {keyword}"
@@ -118,56 +173,36 @@ def fetch_raw_news(selected_channels, keyword, raw_count=50):
 
 
 def process_grouped_news(selected_channels, keyword, display_count=5):
-    """뉴스 중복 제거, 그룹화, 발행 수 계산 및 정렬"""
+    """문자열 유사도 기반 중복 제거 및 발행 수 집계/정렬"""
     raw_items = fetch_raw_news(selected_channels, keyword)
 
     if not raw_items:
         return []
 
-    # 1. 유사한 제목끼리 그룹화
-    grouped = defaultdict(list)
+    # 1. 유사도 기반 그룹화
+    clusters = []  # [{'main': item, 'count': 1, 'items': [...]}]
+
     for item in raw_items:
-        group_key = normalize_title(item["title"])
-        grouped[group_key].append(item)
+        matched = False
+        for cluster in clusters:
+            # 기존 그룹 대표 기사 제목과 비교
+            if is_similar_title(item["title"], cluster["main"]["title"]):
+                cluster["count"] += 1
+                cluster["items"].append(item)
+                matched = True
+                break
 
-    # 2. 대표 기사 선정 및 발행 개수로 정렬
+        if not matched:
+            clusters.append({"main": item, "count": 1, "items": [item]})
+
+    # 2. 결과 데이터 생성
     processed_items = []
-    for key, items in grouped.items():
-        main_item = items[0]  # 첫 번째 기사를 대표 기사로 채택
-        article_count = len(items)  # 해당 이슈의 총 발행 기사 수
-
-        category = "마케팅 동향"
-        title_summary = main_item["title"] + " " + main_item["summary"]
-        if any(
-            w in title_summary
-            for w in [
-                "논란",
-                "의혹",
-                "사과",
-                "피소",
-                "뒷광고",
-                "제재",
-                "폭로",
-                "고소",
-                "탈세",
-            ]
-        ):
-            category = "부정이슈"
-        elif any(
-            w in title_summary
-            for w in [
-                "협업",
-                "대박",
-                "완판",
-                "돌파",
-                "선행",
-                "기부",
-                "수상",
-                "화제",
-                "인기",
-            ]
-        ):
-            category = "긍정이슈"
+    for cluster in clusters:
+        main_item = cluster["main"]
+        article_count = cluster["count"]
+        category = categorize_article(
+            main_item["title"], main_item["summary"]
+        )
 
         summary = main_item["summary"]
         processed_items.append({
@@ -177,16 +212,15 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             "source_name": main_item["source_name"],
             "source_url": main_item["source_url"],
             "summary": summary[:150] + "..." if len(summary) > 150 else summary,
-            "article_count": article_count,  # 발행 수 기재
+            "article_count": article_count,
             "sns_script": generate_sns_script(
                 main_item["title"], summary, category, article_count
             ),
         })
 
-    # 3. 발행 수(article_count) 많은 순서대로 최상단 정렬
+    # 3. 발행 수(article_count) 순으로 정렬 (많은 순서대로)
     processed_items.sort(key=lambda x: x["article_count"], reverse=True)
 
-    # ID 재부여
     for idx, item in enumerate(processed_items, start=1):
         item["id"] = idx
 
@@ -195,29 +229,31 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
 
 def generate_sns_script(title, summary, category, article_count):
     hot_text = (
-        f" (현재 {article_count}개 매체 보도 중!)" if article_count > 1 else ""
+        f" (현재 {article_count}개 매체 집중 보도 중!)"
+        if article_count > 1
+        else ""
     )
 
     if category == "부정이슈":
         return f"""⚠️ **[부정이슈 숏폼 대본]**
-- **[Hooking]** "지금 인플루언서 시장에서 가장 핫한 이슈!{hot_text}"
+- **[Hooking]** "최근 이슈가 되고 있는 인플루언서 부정적 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 주요 보도 기사 캡처 화면 레이어드 및 빨간색 경고 자막
-- **[CTA]** "이번 이슈에 대한 여러분의 생각은? 댓글로 공유해 주세요!"
+- **[연출]** 보도자료 캡처 및 경고 자막 연출
+- **[CTA]** "이번 이슈에 관한 생각이나 의견을 댓글로 나눠주세요."
 """
     elif category == "긍정이슈":
-        return f"""🔥 **[긍정이슈 숏폼 대본]**
-- **[Hooking]** "화제의 중심! 인플루언서 성공 사례입니다.{hot_text}"
+        return f"""🔥 **[긍정이슈/인기 숏폼 대본]**
+- **[Hooking]** "선한 영향력과 화제의 중심! 주목할 만한 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}! {summary[:70]}..."
-- **[연출]** 리드미컬한 BGM 및 화려한 텍스트 모션 효과
-- **[CTA]** "더 많은 트렌드 소식은 팔로우하고 받아보세요!"
+- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 효과
+- **[CTA]** "더 많은 유익한 인플루언서 트렌드는 팔로우해서 받아보세요!"
 """
     else:
         return f"""📊 **[마케팅 동향 숏폼 대본]**
-- **[Hooking]** "마케터라면 꼭 파악해야 할 이번 주 화제의 트렌드!"
+- **[Hooking]** "마케터와 브랜드가 주목해야 할 인플루언서 마켓 시장 트렌드!"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 언론 보도 캡처 및 핵심 키워드 강조
-- **[CTA]** "나중에 다시 보려면 저장 필수!"
+- **[연출]** 핵심 키워드 강조 및 모션 인포그래픽
+- **[CTA]** "마케팅 인사이트가 필요할 때 보려면 저장해 두세요!"
 """
 
 
@@ -226,7 +262,9 @@ st.set_page_config(
 )
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
-st.caption("유사 기사 중복 제거 | 화제성(발행 수) 순 정렬 | 숏폼 대본 생성")
+st.caption(
+    "정밀 유사도 중복 제거 | 화제성(발행 수) 정렬 | 세분화된 카테고리 분류"
+)
 
 st.sidebar.header("⚙️ 수집 조건 설정")
 
@@ -237,7 +275,7 @@ selected_channels = st.sidebar.multiselect(
 )
 
 keyword = st.sidebar.text_input(
-    "상세 검색 키워드 (선택)", value="", placeholder="예: 릴스, 숏폼"
+    "상세 검색 키워드 (선택)", value="", placeholder="예: 릴스, 숏폼, 팝업"
 )
 display_count = st.sidebar.slider("표시할 주요 이슈 수량", 3, 20, 5)
 category_filter = st.sidebar.selectbox(
@@ -245,11 +283,11 @@ category_filter = st.sidebar.selectbox(
 )
 
 fetch_button = st.sidebar.button(
-    "🔄 실시간 이슈 수집 및 분석", use_container_width=True
+    "🔄 실시간 이슈 수집 및 정밀 분석", use_container_width=True
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("뉴스를 그룹화하고 화제성을 분석하는 중입니다..."):
+    with st.spinner("중복 기사를 정밀 비교하고 화제성을 분석하는 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
@@ -270,14 +308,13 @@ if not filtered_items:
 else:
     for item in filtered_items:
         cat_tag = {
-            "긍정이슈": "🟢 [긍정이슈]",
-            "부정이슈": "🔴 [부정이슈]",
-            "마케팅 동향": "🔵 [마케팅 동향]",
+            "긍정이슈": "🟢 [긍정이슈 (선한영향력/인기)]",
+            "부정이슈": "🔴 [부정이슈 (부정적이미지)]",
+            "마케팅 동향": "🔵 [마케팅 동향 (마켓/인플루언서 활용)]",
         }.get(item["category"], "")
 
-        # 1. 화제성 배지 및 발행 수 표기
         count_badge = (
-            f"🔥 **관련 기사 {item['article_count']}개 발행** (화제성 UP)"
+            f"🔥 **관련 기사 {item['article_count']}개 발행** (화제성 HIGH)"
             if item["article_count"] > 1
             else f"📄 단독/관련 기사 {item['article_count']}개"
         )
