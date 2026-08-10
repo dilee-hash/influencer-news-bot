@@ -1,5 +1,4 @@
 from collections import defaultdict
-from difflib import SequenceMatcher
 import json
 import os
 import re
@@ -44,28 +43,47 @@ def clean_html(text):
     return re.sub(cleanr, "", text).strip()
 
 
-def clean_title_for_comparison(title):
-    """중복 비교를 위해 언론사명, [속보], [단독] 등 불필요한 태그 제거"""
+def extract_keywords(title):
+    """제목에서 중복 불필요 단어를 지우고 핵심 단어(2글자 이상)만 세트로 추출"""
     title = re.sub(r"\[.*?\]|\(.*?\)", "", title)  # [단독], (속보) 등 제거
     if " - " in title:
-        title = title.rsplit(" - ", 1)[0]  # 뒤쪽 언론사명 제거
-    # 특수문자 제거 및 공백 정렬
-    title = re.sub(r"[^\w\s]", "", title).replace(" ", "")
-    return title
+        title = title.rsplit(" - ", 1)[0]  # 언론사명 제거
+
+    # 불필요한 일반 단어 제외
+    stop_words = {
+        "단독",
+        "속보",
+        "종합",
+        "오늘",
+        "내일",
+        "최신",
+        "뉴스",
+        "기사",
+        "대표",
+        "사진",
+        "영상",
+    }
+
+    # 특수문자 제거 후 2글자 이상 단어만 추출
+    words = re.findall(r"[가-힣a-zA-Z0-9]{2,}", title)
+    return set(w for w in words if w not in stop_words)
 
 
-def is_similar_title(title1, title2, threshold=0.55):
-    """순수 제목 유사도가 55% 이상이면 동일한 이슈로 판단"""
-    t1 = clean_title_for_comparison(title1)
-    t2 = clean_title_for_comparison(title2)
-    return SequenceMatcher(None, t1, t2).ratio() >= threshold
+def is_same_event(title1, title2):
+    """두 제목 사이에 핵심 키워드가 2개 이상 일치하면 동일한 사건/뉴스로 판단"""
+    kw1 = extract_keywords(title1)
+    kw2 = extract_keywords(title2)
+
+    # 겹치는 키워드 개수 확인
+    overlap = kw1.intersection(kw2)
+    return len(overlap) >= 2
 
 
 def categorize_article(title, summary):
-    """사법/법적 키워드까지 포함한 정밀 카테고리 분류"""
+    """사법/법적/이미지 관련 정밀 카테고리 분류"""
     text = f"{title} {summary}"
 
-    # 1. 부정이슈 (법적/사법/부정적 이미지 관련 강력 키워드)
+    # 1. 부정이슈
     negative_keywords = [
         "검찰",
         "송치",
@@ -100,7 +118,7 @@ def categorize_article(title, summary):
     if any(kw in text for kw in negative_keywords):
         return "부정이슈"
 
-    # 2. 긍정이슈 (선한 영향력, 인기 몰이)
+    # 2. 긍정이슈
     positive_keywords = [
         "선행",
         "기부",
@@ -125,7 +143,7 @@ def categorize_article(title, summary):
     if any(kw in text for kw in positive_keywords):
         return "긍정이슈"
 
-    # 3. 마케팅 동향 (마켓 시장, 플랫폼 및 인플루언서 마케팅)
+    # 3. 마케팅 동향
     return "마케팅 동향"
 
 
@@ -201,13 +219,13 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     if not raw_items:
         return []
 
-    # 정밀 유사도 그룹화
+    # 핵심 키워드 일치 기반 그룹화
     clusters = []
 
     for item in raw_items:
         matched = False
         for cluster in clusters:
-            if is_similar_title(item["title"], cluster["main"]["title"]):
+            if is_same_event(item["title"], cluster["main"]["title"]):
                 cluster["count"] += 1
                 cluster["items"].append(item)
                 matched = True
@@ -221,7 +239,7 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
         main_item = cluster["main"]
         article_count = cluster["count"]
 
-        # 전체 관련 기사 텍스트를 종합하여 정밀 카테고리 분석
+        # 전체 유사 기사의 제목을 모두 합쳐서 카테고리 정밀 검사
         combined_text = " ".join([i["title"] for i in cluster["items"]])
         category = categorize_article(combined_text, main_item["summary"])
 
@@ -239,7 +257,7 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             ),
         })
 
-    # 관련 기사 수(article_count) 순 내림차순 정렬
+    # 발행 기사 수가 많은 순으로 최상단 배치
     processed_items.sort(key=lambda x: x["article_count"], reverse=True)
 
     for idx, item in enumerate(processed_items, start=1):
@@ -250,31 +268,31 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
 
 def generate_sns_script(title, summary, category, article_count):
     hot_text = (
-        f" (현재 {article_count}개 매체 보도 중!)"
+        f" (현재 {article_count}개 매체 집중 보도 중!)"
         if article_count > 1
         else ""
     )
 
     if category == "부정이슈":
         return f"""⚠️ **[부정이슈 숏폼 대본]**
-- **[Hooking]** "최근 논란이 되고 있는 인플루언서 이슈 소식입니다.{hot_text}"
+- **[Hooking]** "최근 이슈가 되고 있는 인플루언서 관련 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 보도 기사 헤드라인 캡처 및 경고 자막 연출
+- **[연출]** 기사 헤드라인 캡처 및 경고 자막 연출
 - **[CTA]** "이번 이슈에 대한 여러분의 의견을 댓글로 남겨주세요."
 """
     elif category == "긍정이슈":
         return f"""🔥 **[긍정이슈/인기 숏폼 대본]**
 - **[Hooking]** "선한 영향력과 화제의 중심! 주목받는 소식입니다.{hot_text}"
 - **[본문]** "{title[:40]}! {summary[:70]}..."
-- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 모션
-- **[CTA]** "더 많은 유익한 인플루언서 트렌드는 팔로우해서 받아보세요!"
+- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 효과
+- **[CTA]** "더 많은 트렌드 소식은 팔로우해서 받아보세요!"
 """
     else:
         return f"""📊 **[마케팅 동향 숏폼 대본]**
-- **[Hooking]** "마케터와 브랜드가 꼭 알아야 할 인플루언서 마켓 트렌드!"
+- **[Hooking]** "마케터와 브랜드가 꼭 알아야 할 인플루언서 트렌드!"
 - **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 핵심 키워드 강조 및 모션 인포그래픽
-- **[CTA]** "인사이트 저장은 필수!"
+- **[연출]** 핵심 키워드 모션 텍스트 및 인포그래픽
+- **[CTA]** "트렌드 저장 필수!"
 """
 
 
@@ -283,9 +301,7 @@ st.set_page_config(
 )
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
-st.caption(
-    "정밀 유사도 중복 제거 | 화제성(발행 수) 정렬 | 법적/사법 이슈 정밀 카테고리 분류"
-)
+st.caption("핵심 키워드 중복 제거 | 화제성(발행 수) 정렬 | 정밀 카테고리 분류")
 
 st.sidebar.header("⚙️ 수집 조건 설정")
 
@@ -308,7 +324,7 @@ fetch_button = st.sidebar.button(
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("중복 기사를 정밀 비교하고 화제성을 분석하는 중입니다..."):
+    with st.spinner("핵심 키워드로 중복 뉴스를 필터링하고 분석하는 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
