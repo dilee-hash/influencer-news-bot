@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -9,15 +10,27 @@ import streamlit as st
 
 FEEDBACK_FILE = "feedback_db.json"
 
+# 인플루언서 / 마케팅 / SNS 트렌드 관련 핵심 검색 키워드 타겟팅
+INFLUENCER_KEYWORDS = [
+    "인플루언서",
+    "크리에이터",
+    "유튜버",
+    "숏폼",
+    "릴스",
+    "틱톡",
+    "치지직",
+    "아프리카TV",
+    "MCN",
+    "SNS 마케팅",
+    "협업 공구",
+]
+
 DEFAULT_CHANNELS = {
+    "🌐 인플루언서/크리에이터 종합 (Google News)": "SEARCH_GOOGLE_NEWS",
     "블로터 (크리에이터/마케팅)": "https://www.bloter.net/rss/allArticle.xml",
     "미디어오늘 (1인미디어/이슈)": "https://www.mediatoday.co.kr/rss/allArticle.xml",
     "디지털데일리 (플랫폼/알고리즘)": "https://ddaily.co.kr/rss/rss_all.php",
     "벤처스퀘어 (MCN/스타트업)": "https://www.venturesquare.net/feed",
-    "전자신문 (디지털마케팅)": "https://www.etnews.com/rss/S60.xml",
-    "지디넷코리아 (빅테크/SNS)": "https://zdnet.co.kr/article/rss/allArticle.xml",
-    "매경이코노미 (MZ트렌드/커머스)": "https://www.mk.co.kr/rss/30000001/",
-    "연합뉴스 (엔터/이슈속보)": "https://www.yna.co.kr/rss/news.xml",
 }
 
 if "channels" not in st.session_state:
@@ -40,18 +53,151 @@ def save_feedback(data):
 def clean_html(text):
     if not text:
         return ""
-    cleanr = re.compile("<.*?>|&quot;|&amp;|&lt;|&gt;")
+    cleanr = re.compile("<.*?>|&quot;|&amp;|&lt;|&gt;|&nbsp;|&#39;")
     return re.sub(cleanr, "", text).strip()
+
+
+def fetch_google_influencer_news(user_keyword="", display_count=5):
+    """구글 뉴스를 이용하여 인플루언서 관련 뉴스만 정밀하게 수집"""
+    items = []
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
+
+    # 기본 검색어 설정
+    if user_keyword:
+        query = f"인플루언서 {user_keyword}"
+    else:
+        query = "인플루언서 OR 크리에이터 OR 유튜버 OR 숏폼 OR 릴스"
+
+    encoded_query = urllib.parse.quote(query)
+    google_rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+
+    try:
+        req = urllib.request.Request(google_rss_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=7) as response:
+            xml_data = response.read()
+
+        root = ET.fromstring(xml_data)
+        channel = root.find("channel")
+        if channel is not None:
+            for entry in channel.findall("item"):
+                title_elem = entry.find("title")
+                title = (
+                    clean_html(title_elem.text)
+                    if title_elem is not None and title_elem.text
+                    else "제목 없음"
+                )
+
+                # 언론사명 분리 (예: "기사제목 - 언론사명")
+                source_name = "구글 뉴스"
+                if " - " in title:
+                    parts = title.rsplit(" - ", 1)
+                    title = parts[0]
+                    source_name = parts[1]
+
+                desc_elem = entry.find("description")
+                summary = (
+                    clean_html(desc_elem.text)
+                    if desc_elem is not None and desc_elem.text
+                    else title
+                )
+
+                link_elem = entry.find("link")
+                link = (
+                    link_elem.text
+                    if link_elem is not None and link_elem.text
+                    else "#"
+                )
+
+                pub_elem = entry.find("pubDate")
+                pub_date = (
+                    pub_elem.text
+                    if pub_elem is not None and pub_elem.text
+                    else ""
+                )
+
+                category = "마케팅 동향"
+                if any(
+                    w in title or w in summary
+                    for w in [
+                        "논란",
+                        "의혹",
+                        "사과",
+                        "피소",
+                        "뒷광고",
+                        "제재",
+                        "폭로",
+                        "고소",
+                        "탈세",
+                    ]
+                ):
+                    category = "부정이슈"
+                elif any(
+                    w in title or w in summary
+                    for w in [
+                        "협업",
+                        "대박",
+                        "완판",
+                        "돌파",
+                        "선행",
+                        "기부",
+                        "수상",
+                        "화제",
+                        "인기",
+                    ]
+                ):
+                    category = "긍정이슈"
+
+                items.append({
+                    "id": len(items) + 1,
+                    "category": category,
+                    "title": title,
+                    "published_at": pub_date[:25],
+                    "source_name": source_name,
+                    "source_url": link,
+                    "summary": summary[:150] + "..."
+                    if len(summary) > 150
+                    else summary,
+                    "sns_script": generate_sns_script(
+                        title, summary, category
+                    ),
+                })
+
+                if len(items) >= display_count:
+                    break
+    except Exception as e:
+        pass
+
+    return items
 
 
 def fetch_direct_channel_news(selected_channels, keyword, display_count=5):
     items = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # 1. 구글 뉴스 인플루언서 타겟팅 수집
+    if "🌐 인플루언서/크리에이터 종합 (Google News)" in selected_channels:
+        items.extend(fetch_google_influencer_news(keyword, display_count))
+
+    # 2. 일반 언론사 RSS 수집 (인플루언서 관련 키워드가 포함된 기사만 필터링)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
 
     for ch_name in selected_channels:
-        url = st.session_state.channels.get(ch_name)
-        if not url:
+        if ch_name == "🌐 인플루언서/크리에이터 종합 (Google News)":
             continue
+        if len(items) >= display_count:
+            break
+
+        url = st.session_state.channels.get(ch_name)
+        if not url or url.startswith("SEARCH_"):
+            continue
+
         try:
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -67,7 +213,7 @@ def fetch_direct_channel_news(selected_channels, keyword, display_count=5):
                 title = (
                     clean_html(title_elem.text)
                     if title_elem is not None and title_elem.text
-                    else "제목 없음"
+                    else ""
                 )
 
                 desc_elem = entry.find("description")
@@ -76,6 +222,13 @@ def fetch_direct_channel_news(selected_channels, keyword, display_count=5):
                     if desc_elem is not None and desc_elem.text
                     else title
                 )
+
+                # 필수 조건: 인플루언서/마케팅 관련 키워드가 있어야만 수집
+                is_influencer_related = any(
+                    k in title or k in summary for k in INFLUENCER_KEYWORDS
+                )
+                if not is_influencer_related:
+                    continue
 
                 if keyword and (
                     keyword not in title and keyword not in summary
@@ -107,6 +260,7 @@ def fetch_direct_channel_news(selected_channels, keyword, display_count=5):
                         "뒷광고",
                         "제재",
                         "폭로",
+                        "고소",
                     ]
                 ):
                     category = "부정이슈"
@@ -145,10 +299,7 @@ def fetch_direct_channel_news(selected_channels, keyword, display_count=5):
         except Exception:
             continue
 
-        if len(items) >= display_count:
-            break
-
-    return items
+    return items[:display_count]
 
 
 def generate_sns_script(title, summary, category):
@@ -168,17 +319,21 @@ def generate_sns_script(title, summary, category):
 """
     else:
         return f"""📊 **[마케팅 동향 숏폼 대본 파이프라인]**
-- **[Hooking]** "마케터라면 꼭 알아야 할 이번 주 최신 트렌드!"
+- **[Hooking]** "마케터라면 꼭 알아야 할 이번 주 인플루언서 트렌드!"
 - **[본문]** "{title[:40]}... {summary[:80]}..."
 - **[연출]** 통계 그래프 및 주요 키워드 모션 텍스트
 - **[CTA]** "나중에 다시 보려면 지금 저장해 두세요!"
 """
 
 
-st.set_page_config(page_title="인플루언서 뉴스 SNS Curation", layout="wide")
+st.set_page_config(
+    page_title="인플루언서 뉴스 SNS Curation", layout="wide"
+)
 
 st.title("📱 인플루언서/마케팅 뉴스 실시간 Curation System")
-st.caption("인플루언서 전문 매체 수집 파이프라인 | 채널 관리 | 숏폼 대본 자동 생성")
+st.caption(
+    "인플루언서 타겟 뉴스 수집 파이프라인 | 채널 관리 | 숏폼 대본 자동 생성"
+)
 
 st.sidebar.header("⚙️ 수집 채널 및 조건 설정")
 
@@ -189,7 +344,9 @@ selected_channels = st.sidebar.multiselect(
 )
 
 keyword = st.sidebar.text_input(
-    "필터링 키워드 (선택)", value="", placeholder="예: 인플루언서, 릴스, 숏폼"
+    "상세 검색 키워드 (선택)",
+    value="",
+    placeholder="예: 릴스, 숏폼, 팝업스토어",
 )
 display_count = st.sidebar.slider("수집할 뉴스 수량", 3, 20, 5)
 category_filter = st.sidebar.selectbox(
@@ -232,7 +389,7 @@ with st.sidebar.expander("🛠️ 뉴스 채널 추가 / 관리 / 초기화"):
         st.rerun()
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("전문 매체에서 실제 원본 기사를 수집하는 중입니다..."):
+    with st.spinner("인플루언서/마케팅 관련 최신 뉴스를 정밀 수집하는 중입니다..."):
         st.session_state.news_data = fetch_direct_channel_news(
             selected_channels, keyword, display_count
         )
@@ -250,7 +407,7 @@ st.sidebar.write(f"현재 표시 뉴스: **{len(filtered_items)}개**")
 
 if not filtered_items:
     st.info(
-        "수집된 뉴스가 없습니다. 채널을 체크하셨는지 또는 키워드 조건을 확인해 주세요."
+        "수집된 인플루언서 뉴스가 없습니다. 키워드를 변경하거나 '실시간 최신 뉴스 수집' 버튼을 눌러보세요."
     )
 else:
     for item in filtered_items:
