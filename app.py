@@ -45,11 +45,10 @@ def clean_html(text):
 
 def extract_keywords(title):
     """제목에서 중복 불필요 단어를 지우고 핵심 단어(2글자 이상)만 세트로 추출"""
-    title = re.sub(r"\[.*?\]|\(.*?\)", "", title)  # [단독], (속보) 등 제거
+    title = re.sub(r"\[.*?\]|\(.*?\)", "", title)
     if " - " in title:
-        title = title.rsplit(" - ", 1)[0]  # 언론사명 제거
+        title = title.rsplit(" - ", 1)[0]
 
-    # 불필요한 일반 단어 제외
     stop_words = {
         "단독",
         "속보",
@@ -63,27 +62,22 @@ def extract_keywords(title):
         "사진",
         "영상",
     }
-
-    # 특수문자 제거 후 2글자 이상 단어만 추출
     words = re.findall(r"[가-힣a-zA-Z0-9]{2,}", title)
     return set(w for w in words if w not in stop_words)
 
 
 def is_same_event(title1, title2):
-    """두 제목 사이에 핵심 키워드가 2개 이상 일치하면 동일한 사건/뉴스로 판단"""
+    """핵심 키워드 2개 이상 일치 시 동일 사건으로 처리"""
     kw1 = extract_keywords(title1)
     kw2 = extract_keywords(title2)
-
-    # 겹치는 키워드 개수 확인
     overlap = kw1.intersection(kw2)
     return len(overlap) >= 2
 
 
 def categorize_article(title, summary):
-    """사법/법적/이미지 관련 정밀 카테고리 분류"""
+    """정밀 카테고리 분류"""
     text = f"{title} {summary}"
 
-    # 1. 부정이슈
     negative_keywords = [
         "검찰",
         "송치",
@@ -118,7 +112,6 @@ def categorize_article(title, summary):
     if any(kw in text for kw in negative_keywords):
         return "부정이슈"
 
-    # 2. 긍정이슈
     positive_keywords = [
         "선행",
         "기부",
@@ -143,8 +136,43 @@ def categorize_article(title, summary):
     if any(kw in text for kw in positive_keywords):
         return "긍정이슈"
 
-    # 3. 마케팅 동향
     return "마케팅 동향"
+
+
+def generate_sns_titles(title, category):
+    """SNS 콘텐츠용 제안 타이틀 3가지 생성"""
+    clean_t = re.sub(r"\[.*?\]|\(.*?\)", "", title).strip()
+
+    if category == "부정이슈":
+        return [
+            f"🚨 \"결국 선 넘었다...\" {clean_t[:25]} 전말 총정리",
+            f"👀 지금 난리 난 인플루언서 이슈: {clean_t[:25]}",
+            f"⚠️ 이건 몰랐지? {clean_t[:28]} 사건 핵심만 빠르게 보기",
+        ]
+    elif category == "긍정이슈":
+        return [
+            f"✨ \"이게 진짜 영향력이지!\" {clean_t[:25]} 화제의 이유",
+            f"🔥 지금 대박 난 인플루언서 소식: {clean_t[:25]}",
+            f"👏 박수받을 만한 소식! {clean_t[:28]} 스토리",
+        ]
+    else:
+        return [
+            f"💡 마케터 필수 참고! {clean_t[:25]} 트렌드 분석",
+            f"📈 요즘 인플루언서 시장 트렌드: {clean_t[:25]}",
+            f"🔍 브랜드 담당자라면 주목해야 할 {clean_t[:25]} 이슈",
+        ]
+
+
+def generate_3line_summary(title, summary):
+    """육하원칙 기반 읽을 맛 나는 3줄 핵심 요약 생성"""
+    # 불필요한 공백 정돈
+    text = clean_html(f"{title} {summary}")
+
+    line1 = f"📌 **[사건의 발단]** {title} 건으로 최근 업계와 대중의 이목이 집중되었습니다."
+    line2 = f"🔍 **[주요 내용]** {summary[:90]}..." if len(summary) > 90 else f"🔍 **[주요 내용]** {summary}"
+    line3 = f"📢 **[현재 상황 & 전망]** 관련 기관 및 사법 절차가 진행 중이며, 향후 인플루언서 파급력에 대한 논의가 이어지고 있습니다."
+
+    return [line1, line2, line3]
 
 
 def fetch_raw_news(selected_channels, keyword):
@@ -219,9 +247,7 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     if not raw_items:
         return []
 
-    # 핵심 키워드 일치 기반 그룹화
     clusters = []
-
     for item in raw_items:
         matched = False
         for cluster in clusters:
@@ -239,25 +265,25 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
         main_item = cluster["main"]
         article_count = cluster["count"]
 
-        # 전체 유사 기사의 제목을 모두 합쳐서 카테고리 정밀 검사
         combined_text = " ".join([i["title"] for i in cluster["items"]])
         category = categorize_article(combined_text, main_item["summary"])
 
-        summary = main_item["summary"]
+        sns_titles = generate_sns_titles(main_item["title"], category)
+        summary_lines = generate_3line_summary(
+            main_item["title"], main_item["summary"]
+        )
+
         processed_items.append({
             "category": category,
-            "title": main_item["title"],
+            "original_title": main_item["title"],
+            "sns_titles": sns_titles,
+            "summary_lines": summary_lines,
             "published_at": main_item["published_at"],
             "source_name": main_item["source_name"],
             "source_url": main_item["source_url"],
-            "summary": summary[:150] + "..." if len(summary) > 150 else summary,
             "article_count": article_count,
-            "sns_script": generate_sns_script(
-                main_item["title"], summary, category, article_count
-            ),
         })
 
-    # 발행 기사 수가 많은 순으로 최상단 배치
     processed_items.sort(key=lambda x: x["article_count"], reverse=True)
 
     for idx, item in enumerate(processed_items, start=1):
@@ -266,42 +292,14 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     return processed_items[:display_count]
 
 
-def generate_sns_script(title, summary, category, article_count):
-    hot_text = (
-        f" (현재 {article_count}개 매체 집중 보도 중!)"
-        if article_count > 1
-        else ""
-    )
-
-    if category == "부정이슈":
-        return f"""⚠️ **[부정이슈 숏폼 대본]**
-- **[Hooking]** "최근 이슈가 되고 있는 인플루언서 관련 소식입니다.{hot_text}"
-- **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 기사 헤드라인 캡처 및 경고 자막 연출
-- **[CTA]** "이번 이슈에 대한 여러분의 의견을 댓글로 남겨주세요."
-"""
-    elif category == "긍정이슈":
-        return f"""🔥 **[긍정이슈/인기 숏폼 대본]**
-- **[Hooking]** "선한 영향력과 화제의 중심! 주목받는 소식입니다.{hot_text}"
-- **[본문]** "{title[:40]}! {summary[:70]}..."
-- **[연출]** 밝고 긍정적인 BGM 및 하이라이트 텍스트 효과
-- **[CTA]** "더 많은 트렌드 소식은 팔로우해서 받아보세요!"
-"""
-    else:
-        return f"""📊 **[마케팅 동향 숏폼 대본]**
-- **[Hooking]** "마케터와 브랜드가 꼭 알아야 할 인플루언서 트렌드!"
-- **[본문]** "{title[:40]}... {summary[:70]}..."
-- **[연출]** 핵심 키워드 모션 텍스트 및 인포그래픽
-- **[CTA]** "트렌드 저장 필수!"
-"""
-
-
 st.set_page_config(
     page_title="인플루언서 뉴스 SNS Curation", layout="wide"
 )
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
-st.caption("핵심 키워드 중복 제거 | 화제성(발행 수) 정렬 | 정밀 카테고리 분류")
+st.caption(
+    "SNS 콘텐츠 맞춤 타이틀 제안 | 육하원칙 3줄 요약 | 키워드 중복 제거 및 화제성 정렬"
+)
 
 st.sidebar.header("⚙️ 수집 조건 설정")
 
@@ -324,7 +322,7 @@ fetch_button = st.sidebar.button(
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("핵심 키워드로 중복 뉴스를 필터링하고 분석하는 중입니다..."):
+    with st.spinner("뉴스를 정밀 분석하고 SNS 맞춤 콘텐츠를 생성 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
@@ -351,13 +349,14 @@ else:
         }.get(item["category"], "")
 
         count_badge = (
-            f"🔥 **관련 기사 {item['article_count']}개 발행** (화제성 HIGH)"
+            f"🔥 **관련 기사 {item['article_count']}개 보도 중** (화제성 HIGH)"
             if item["article_count"] > 1
             else f"📄 단독/관련 기사 {item['article_count']}개"
         )
         st.caption(count_badge)
 
-        st.subheader(f"{cat_tag} [{item['id']}] {item['title']}")
+        # 1. 뉴스 원제 및 기본 정보
+        st.subheader(f"{cat_tag} [{item['id']}] {item['original_title']}")
 
         c1, c2, c3 = st.columns([2, 2, 2])
         with c1:
@@ -369,21 +368,30 @@ else:
                 "🔗 원본 기사 읽기 ↗", item["source_url"], use_container_width=True
             )
 
-        st.markdown(f"**📝 요약:** {item['summary']}")
+        # 2. SNS 추천 콘텐츠 타이틀 (3가지)
+        st.markdown("---")
+        st.markdown("### 💡 **SNS 추천 콘텐츠 타이틀 (3가지 제안)**")
+        for i, t in enumerate(item["sns_titles"], 1):
+            st.markdown(f"*{i}. {t}*")
 
-        with st.expander("🎬 SNS 숏폼 대본 보기", expanded=True):
-            st.markdown(item["sns_script"])
+        # 3. 육하원칙 3줄 본문 요약
+        st.markdown("### 📝 **이슈 핵심 요약 (3줄 정리)**")
+        for line in item["summary_lines"]:
+            st.markdown(f"- {line}")
 
+        # 4. 검수 피드백 폼
         with st.form(key=f"feedback_{item['id']}"):
             f1, f2 = st.columns([1, 1])
             with f1:
                 name = st.text_input("검수자 이름", key=f"n_{item['id']}")
             with f2:
                 rating = st.slider(
-                    "대본 점수 (1~5점)", 1, 5, 5, key=f"r_{item['id']}"
+                    "콘텐츠 만족도 (1~5점)", 1, 5, 5, key=f"r_{item['id']}"
                 )
             fb_text = st.text_area(
-                "피드백", placeholder="수정 멘트 작성", key=f"t_{item['id']}"
+                "수정 요청 및 피드백",
+                placeholder="타이틀이나 요약문 수정 의견 작성",
+                key=f"t_{item['id']}",
             )
 
             if st.form_submit_button("피드백 제출"):
@@ -393,7 +401,7 @@ else:
                     save_feedback({
                         "news_id": item["id"],
                         "category": item["category"],
-                        "news_title": item["title"],
+                        "news_title": item["original_title"],
                         "reviewer_name": name,
                         "rating": rating,
                         "feedback": fb_text,
