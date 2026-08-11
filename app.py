@@ -60,45 +60,42 @@ def is_same_event(title1, title2):
 
 
 def analyze_batch_with_gemini(api_key, clusters_data):
-    """모든 기사를 묶어서 API 호출 단 1회로 처리"""
+    """API 호출 시도 (실패 시 에러 문구 없이 None 반환)"""
     try:
         client = genai.Client(api_key=api_key.strip())
 
         items_prompt_list = []
         for i, c in enumerate(clusters_data, 1):
             items_prompt_list.append(
-                f"[이슈 ID: {i}]\n제목: {c['main']['title']}\n내용 요약: {c['main']['summary']}\n"
+                f"[이슈 ID: {i}]\n제목: {c['main']['title']}\n내용: {c['main']['summary']}\n"
             )
 
         combined_input = "\n".join(items_prompt_list)
 
         prompt = f"""
-당신은 인플루언서 및 마케팅 이슈 분석 전문가입니다.
-아래 제공된 이슈 목록들을 분석하여 각각의 이슈에 대한 JSON 데이터를 배열 형태("items")로 반환해 주세요.
-
-[분석할 이슈 목록]
+인플루언서/마케팅 이슈 목록입니다. 분석 후 JSON 형식만 출력하세요.
 {combined_input}
 
-[반환 형태 - 반드시 JSON 표준 형식만 출력]
+[출력 규격]
 {{
   "items": [
     {{
       "id": 1,
-      "category": "부정이슈", 
+      "category": "마케팅 동향", 
       "sns_titles": [
-        "자극적인 SNS 제목 1",
-        "궁금증 유발 제목 2",
-        "핵심 요약 제목 3"
+        "자극적인 SNS 헤드라인 1",
+        "궁금증 유발 헤드라인 2",
+        "핵심 요약 헤드라인 3"
       ],
       "summary_lines": [
-        "📌 **[누가/무엇을]** 주요 주체 및 핵심 사건 정리",
-        "🔍 **[어떻게/왜]** 사건의 발생 경위 및 원인",
-        "📢 **[영향/전망]** 파장 및 진행 상황"
+        "📌 **[누가/무엇을]** 기사 내용 요약",
+        "🔍 **[어떻게/왜]** 배경 및 원인",
+        "📢 **[영향/전망]** 시장 파장 및 반응"
       ]
     }}
   ]
 }}
-카테고리는 반드시 '긍정이슈', '부정이슈', '마케팅 동향' 중 하나를 선택하세요.
+카테고리는 반드시 '긍정이슈', '부정이슈', '마케팅 동향' 중 선택.
 """
 
         response = client.models.generate_content(
@@ -110,9 +107,10 @@ def analyze_batch_with_gemini(api_key, clusters_data):
         )
 
         res_json = json.loads(response.text.strip())
-        return res_json.get("items", []), None
-    except Exception as e:
-        return None, str(e)
+        return res_json.get("items", [])
+    except Exception:
+        # API 오류 발생 시 아무런 에러 메시지를 노출하지 않고 깔끔하게 기본 모드로 전환
+        return None
 
 
 def fetch_raw_news(selected_channels, keyword):
@@ -200,14 +198,10 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
 
     ai_analysis_map = {}
     if api_key:
-        ai_results, err_msg = analyze_batch_with_gemini(
-            api_key, target_clusters
-        )
+        ai_results = analyze_batch_with_gemini(api_key, target_clusters)
         if ai_results:
             for idx, res in enumerate(ai_results, 1):
                 ai_analysis_map[idx] = res
-        else:
-            st.warning(f"⚠️ Gemini API 호출 제한/오류 발생 (기본 요약으로 표시됩니다): {err_msg}")
 
     processed_items = []
     for idx, cluster in enumerate(target_clusters, start=1):
@@ -219,17 +213,24 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             sns_titles = ai_item.get("sns_titles", [])
             summary_lines = ai_item.get("summary_lines", [])
         else:
-            # API 제한/오류 시 파싱 가능한 기본 데이터 구성
+            # API 제한되거나 실패했을 때 나오는 대단히 깔끔한 뉴스 원본 기반 데이터
             category = "마케팅 동향"
+            title = main_item["title"]
+            summary_text = (
+                main_item["summary"]
+                if main_item["summary"]
+                else "주요 수집 뉴스 기사입니다. 원본 링크를 통해 자세한 내용을 확인하세요."
+            )
+
             sns_titles = [
-                f"🔥 {main_item['title']}",
-                f"📢 [이슈 분석] {main_item['title']}",
-                f"👀 관련 소식: {main_item['title'][:30]}...",
+                f"🔥 {title}",
+                f"🚨 [이슈 집계] {title}",
+                f"👀 {title[:35]}... 관련 소식 정리",
             ]
             summary_lines = [
-                f"📌 **[누가/무엇을]** {main_item['title']}",
-                f"🔍 **[주요 내용]** {main_item['summary'][:100] if main_item['summary'] else '상세 기사 참조'}",
-                f"📢 **[보도 출처]** {main_item['source_name']} (관련 기사 {cluster['count']}건)",
+                f"📌 **[주요 이슈]** {title}",
+                f"🔍 **[기사 요약]** {summary_text[:120]}",
+                f"📢 **[보도 출처]** {main_item['source_name']} 외 관련 기사 {cluster['count']}건 보도 중",
             ]
 
         processed_items.append({
@@ -247,19 +248,17 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     return processed_items
 
 
-st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
+st.set_page_config(page_title="인플루언서 뉴스 큐레이션", layout="wide")
 
-st.title("📱 인플루언서/마케팅 실시간 이슈 AI 큐레이션")
-st.caption(
-    "Gemini AI 정밀 분석 | 배치 처리로 API 효율화 | SNS 맞춤 제안 타이틀"
-)
+st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
+st.caption("실시간 실시간 이슈 자동 수집 | SNS 맞춤 제안 타이틀 | 핵심 요약 정리")
 
-st.sidebar.header("⚙️ 설정 및 API Key")
+st.sidebar.header("⚙️ 설정")
 
 gemini_key_input = st.sidebar.text_input(
-    "Gemini API Key",
+    "Gemini API Key (선택)",
     type="password",
-    help="Google AI Studio에서 발급받은 API Key를 입력하세요.",
+    help="입력 시 AI 정밀 분석이 실행되며, 미입력/한도초과 시 기본 수집 모드로 실행됩니다.",
 )
 if gemini_key_input:
     os.environ["GEMINI_API_KEY"] = gemini_key_input.strip()
@@ -279,11 +278,11 @@ category_filter = st.sidebar.selectbox(
 )
 
 fetch_button = st.sidebar.button(
-    "🔄 실시간 이슈 수집 및 AI 정밀 분석", use_container_width=True
+    "🔄 실시간 이슈 수집 및 분석", use_container_width=True
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("이슈를 수집하고 Gemini AI로 일괄 분석 중입니다..."):
+    with st.spinner("실시간 이슈를 수집하고 정돈 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
@@ -305,7 +304,7 @@ else:
             "긍정이슈": "🟢 [긍정이슈]",
             "부정이슈": "🔴 [부정이슈]",
             "마케팅 동향": "🔵 [마케팅 동향]",
-        }.get(item["category"], "")
+        }.get(item["category"], "🔵 [마케팅 동향]")
 
         count_badge = (
             f"🔥 **관련 기사 {item['article_count']}개 보도 중** (화제성 HIGH)"
@@ -331,7 +330,7 @@ else:
         for i, t in enumerate(item["sns_titles"], 1):
             st.markdown(f"*{i}. {t}*")
 
-        st.markdown("### 📝 **이슈 핵심 요약 (AI 상세 3줄 정리)**")
+        st.markdown("### 📝 **이슈 핵심 요약 (3줄 정리)**")
         for line in item["summary_lines"]:
             st.markdown(f"- {line}")
 
