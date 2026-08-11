@@ -1,4 +1,3 @@
-from collections import defaultdict
 import json
 import os
 import re
@@ -9,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
+from google import genai
 
 FEEDBACK_FILE = "feedback_db.json"
 
@@ -22,6 +22,14 @@ DEFAULT_CHANNELS = {
 
 if "channels" not in st.session_state:
     st.session_state.channels = DEFAULT_CHANNELS.copy()
+
+
+def get_gemini_client():
+    """환경변수 또는 Streamlit secrets에서 API 키를 가져와 Client 설정"""
+    api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
 
 
 def save_feedback(data):
@@ -46,39 +54,8 @@ def clean_html(text):
     return " ".join(cleaned.split())
 
 
-def clean_title_for_subject(title):
-    clean_t = re.sub(r"\[.*?\]|\(.*?\)|<.*?>", "", title).strip()
-    if " - " in clean_t:
-        clean_t = clean_t.rsplit(" - ", 1)[0]
-    clean_t = re.sub(r"['\"`“”‘’]", "", clean_t)
-    return clean_t.strip()
-
-
-def extract_subject_from_text(title):
-    """제목에서 핵심 행위자와 사건 대상을 원형 그대로 보존 추출"""
-    clean_t = clean_title_for_subject(title)
-    # 사건 관련 핵심 구문 보존
-    match = re.search(r"(.*?)(?:검찰|송치|고발|피소|논란|의혹|입건|경찰)", clean_t)
-    if match and len(match.group(1).strip()) > 3:
-        return match.group(1).strip()
-    return clean_t
-
-
 def extract_keywords(title):
-    title = clean_title_for_subject(title)
-    stop_words = {
-        "단독",
-        "속보",
-        "종합",
-        "오늘",
-        "내일",
-        "최신",
-        "뉴스",
-        "기사",
-        "대표",
-        "사진",
-        "영상",
-    }
+    stop_words = {"단독", "속보", "종합", "오늘", "내일", "최신", "뉴스", "기사"}
     words = re.findall(r"[가-힣a-zA-Z0-9]{2,}", title)
     return set(w for w in words if w not in stop_words)
 
@@ -86,133 +63,58 @@ def extract_keywords(title):
 def is_same_event(title1, title2):
     kw1 = extract_keywords(title1)
     kw2 = extract_keywords(title2)
-    overlap = kw1.intersection(kw2)
-    return len(overlap) >= 2
+    return len(kw1.intersection(kw2)) >= 2
 
 
-def categorize_article(title, summary):
-    text = f"{title} {summary}"
-    negative_keywords = [
-        "검찰",
-        "송치",
-        "명예훼손",
-        "경찰",
-        "조사",
-        "입건",
-        "피소",
-        "고소",
-        "재판",
-        "벌금",
-        "구속",
-        "피의자",
-        "논란",
-        "의혹",
-        "사과",
-        "뒷광고",
-        "제재",
-        "폭로",
-        "탈세",
-        "비판",
-        "해명",
-        "피해",
-        "사기",
-        "징계",
-        "리스크",
-        "악플",
-        "경고",
-        "유죄",
-        "혐의",
-    ]
-    if any(kw in text for kw in negative_keywords):
-        return "부정이슈"
+def analyze_with_gemini(client, titles_and_summaries):
+    """Gemini API를 호출하여 정밀한 실명/사건 분석 및 SNS 타이틀/요약문 생성"""
+    prompt = f"""
+    당신은 전문 뉴스 에디터이자 SNS 콘텐츠 기획자입니다.
+    아래 수집된 뉴스 기사 제목 및 텍스트 모음을 분석하여 다음을 수행해 주세요.
 
-    positive_keywords = [
-        "선행",
-        "기부",
-        "미담",
-        "선한영향력",
-        "선한 영향력",
-        "봉사",
-        "기증",
-        "인기",
-        "대박",
-        "완판",
-        "돌파",
-        "수상",
-        "화제",
-        "1위",
-        "급상승",
-        "트렌딩",
-        "열풍",
-        "히트",
-        "성공",
-    ]
-    if any(kw in text for kw in positive_keywords):
-        return "긍정이슈"
+    [기사 수집 텍스트]
+    {titles_and_summaries}
 
-    return "마케팅 동향"
+    [요구사항]
+    1. 카테고리 분류: "부정이슈", "긍정이슈", "마케팅 동향" 중 하나로 분류하세요.
+    2. 등장인물/주체 명확화: 기사상에 언급된 특정 인물명, 유튜버 이름, 팬덤명, 기관명 등 '누가 누구를 고발/송치/언급했는지' 명확히 파악하세요.
+    3. SNS 추천 타이틀 3가지: 클릭을 부르는 자연스럽고 임팩트 있는 제목을 작성하세요.
+    4. 핵심 요약 3줄: 아래 형식을 엄격히 지켜 명확한 육하원칙 문장으로 작성하세요.
+       - Line 1: [누가/무엇을] (주체와 피의자/대상 실명을 명확히 명시한 사건 배경)
+       - Line 2: [어떻게/왜] (고발 사유, 수사 경과, 법적 송치/조사 과정)
+       - Line 3: [영향/전망] (업계 파급효과 및 향후 관전 포인트)
 
+    반드시 아래의 JSON 포맷으로만 응답하세요(다른 설명 없이 JSON만 출력):
+    {{
+      "category": "부정이슈 또는 긍정이슈 또는 마케팅 동향",
+      "sns_titles": ["타이틀1", "타이틀2", "타이틀3"],
+      "summary_lines": [
+        "📌 **[누가/무엇을]** ...",
+        "🔍 **[어떻게/왜]** ...",
+        "📢 **[영향/전망]** ..."
+      ]
+    }}
+    """
 
-def generate_sns_titles(title, category):
-    topic = clean_title_for_subject(title)
-    if len(topic) > 25:
-        topic = topic[:25] + "..."
-
-    if category == "부정이슈":
-        return [
-            f"🚨 \"결국 사법 처리 전말...\" {topic} 사건 핵심 정리",
-            f"👀 당사자 및 사건 전말 분석: {topic} 이슈 완전 요약",
-            f"⚠️ 피소부터 송치까지, {topic} 사안의 핵심 개요",
-        ]
-    elif category == "긍정이슈":
-        return [
-            f"✨ \"선한 영향력 화제!\" {topic} 핵심 스토리",
-            f"🔥 지금 관심 폭발 중인 이슈: {topic}",
-            f"👏 대중의 응원 이어지는 {topic} 비하인드",
-        ]
-    else:
-        return [
-            f"💡 마케터 필수 참고! {topic} 트렌드 분석",
-            f"📈 주요 플랫폼·크리에이터 현황: {topic}",
-            f"🔍 트렌드 리포트: 브랜드 담당자가 체크해야 할 {topic}",
-        ]
-
-
-def build_readable_3line_summary(title, items, category):
-    who_what = extract_subject_from_text(title)
-
-    if category == "부정이슈":
-        line1 = f"📌 **[누가/무엇을]** '{who_what}' 사안과 관련해 허위사실 유포 및 명예훼손 등의 혐의로 피소·고발된 사건입니다."
-        line2 = f"🔍 **[어떻게/왜]** 수사기관 조사 결과 혐의점이 인정되어 관련 사건이 검찰로 송치되는 등 사법 절차가 진행 중입니다."
-        line3 = f"📢 **[영향/전망]** 무분별한 억측성 콘텐츠 발행에 대한 강경 대응 기조가 이어지며, 향후 수사 및 재판 결과에 관심이 집중됩니다."
-    elif category == "긍정이슈":
-        line1 = f"📌 **[누가/무엇을]** '{who_what}' 관련 활동이 대중과 팬덤 사이에서 큰 화제를 모으고 있습니다."
-        line2 = f"🔍 **[어떻게/왜]** 진정성 있는 콘텐츠 및 선한 영향력이 SNS와 온라인 커뮤니티를 중심으로 빠르게 확산되었습니다."
-        line3 = f"📢 **[영향/전망]** 브랜드 이미지 제고와 더불어 추가 협업 및 팬덤 유입 등의 긍정적 파급효과가 기대됩니다."
-    else:
-        line1 = f"📌 **[누가/무엇을]** '{who_what}' 이슈가 인플루언서 및 디지털 마케팅 시장의 주요 화두로 부상했습니다."
-        line2 = f"🔍 **[어떻게/왜]** 플랫폼 환경 변화 및 이용자 반응에 맞춰 관련 마케팅 전략이 빠르게 전환되고 있습니다."
-        line3 = f"📢 **[영향/전망]** 브랜드 담당자는 해당 흐름을 분석하여 향후 캠페인 기획에 적극 활용할 필요가 있습니다."
-
-    return [line1, line2, line3]
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        text = response.text.strip()
+        text = re.sub(r"```json\s*|\s*```", "", text)
+        return json.loads(text)
+    except Exception as e:
+        return None
 
 
 def fetch_raw_news(selected_channels, keyword):
     raw_items = []
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     if "🌐 인플루언서/크리에이터 종합 (Google News)" in selected_channels:
-        query = (
-            f"인플루언서 {keyword}"
-            if keyword
-            else "인플루언서 OR 크리에이터 OR 유튜버 OR 숏폼 OR 릴스"
-        )
-        encoded_query = urllib.parse.quote(query)
-        google_rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ko&gl=KR&ceid=KR:ko"
+        query = f"인플루언서 {keyword}" if keyword else "인플루언서 OR 크리에이터 OR 유튜버 OR 숏폼 OR 릴스"
+        google_rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
 
         try:
             req = urllib.request.Request(google_rss_url, headers=headers)
@@ -221,35 +123,17 @@ def fetch_raw_news(selected_channels, keyword):
                 channel = root.find("channel")
                 if channel is not None:
                     for entry in channel.findall("item"):
-                        raw_title = (
-                            clean_html(entry.find("title").text)
-                            if entry.find("title") is not None
-                            else ""
-                        )
+                        raw_title = clean_html(entry.find("title").text) if entry.find("title") is not None else ""
                         source_name = "구글 뉴스"
                         title = raw_title
                         if " - " in raw_title:
                             parts = raw_title.rsplit(" - ", 1)
-                            title = parts[0]
-                            source_name = parts[1]
+                            title, source_name = parts[0], parts[1]
 
                         desc_elem = entry.find("description")
-                        summary = (
-                            clean_html(desc_elem.text)
-                            if desc_elem is not None and desc_elem.text
-                            else ""
-                        )
-
-                        link = (
-                            entry.find("link").text
-                            if entry.find("link") is not None
-                            else "#"
-                        )
-                        pub_date = (
-                            entry.find("pubDate").text
-                            if entry.find("pubDate") is not None
-                            else ""
-                        )
+                        summary = clean_html(desc_elem.text) if desc_elem is not None and desc_elem.text else ""
+                        link = entry.find("link").text if entry.find("link") is not None else "#"
+                        pub_date = entry.find("pubDate").text if entry.find("pubDate") is not None else ""
 
                         raw_items.append({
                             "title": title,
@@ -266,9 +150,10 @@ def fetch_raw_news(selected_channels, keyword):
 
 def process_grouped_news(selected_channels, keyword, display_count=5):
     raw_items = fetch_raw_news(selected_channels, keyword)
-
     if not raw_items:
         return []
+
+    client = get_gemini_client()
 
     clusters = []
     for item in raw_items:
@@ -279,24 +164,30 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
                 cluster["items"].append(item)
                 matched = True
                 break
-
         if not matched:
             clusters.append({"main": item, "count": 1, "items": [item]})
 
     processed_items = []
     for cluster in clusters:
         main_item = cluster["main"]
-        article_count = cluster["count"]
+        combined_text = "\n".join([f"- 제목: {i['title']} / 내용: {i['summary']}" for i in cluster["items"]])
 
-        combined_text = " ".join(
-            [i["title"] + " " + i["summary"] for i in cluster["items"]]
-        )
-        category = categorize_article(combined_text, main_item["summary"])
+        ai_result = None
+        if client:
+            ai_result = analyze_with_gemini(client, combined_text)
 
-        sns_titles = generate_sns_titles(main_item["title"], category)
-        summary_lines = build_readable_3line_summary(
-            main_item["title"], cluster["items"], category
-        )
+        if ai_result:
+            category = ai_result.get("category", "마케팅 동향")
+            sns_titles = ai_result.get("sns_titles", [])
+            summary_lines = ai_result.get("summary_lines", [])
+        else:
+            category = "부정이슈" if any(k in combined_text for k in ["고발", "검찰", "송치"]) else "마케팅 동향"
+            sns_titles = [f"🚨 {main_item['title']}", f"👀 {main_item['title']}", f"⚠️ {main_item['title']}"]
+            summary_lines = [
+                f"📌 **[누가/무엇을]** {main_item['title']}",
+                "🔍 **[어떻게/왜]** 상세 수사 및 관련 절차가 진행 중인 사안입니다.",
+                "📢 **[영향/전망]** 업계 동향 및 수사 결과를 지켜볼 필요가 있습니다."
+            ]
 
         processed_items.append({
             "category": category,
@@ -306,27 +197,27 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             "published_at": main_item["published_at"],
             "source_name": main_item["source_name"],
             "source_url": main_item["source_url"],
-            "article_count": article_count,
+            "article_count": cluster["count"],
         })
 
     processed_items.sort(key=lambda x: x["article_count"], reverse=True)
-
     for idx, item in enumerate(processed_items, start=1):
         item["id"] = idx
 
     return processed_items[:display_count]
 
 
-st.set_page_config(
-    page_title="인플루언서 뉴스 SNS Curation", layout="wide"
-)
+st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
 
-st.title("📱 인플루언서/마케팅 실시간 이슈 큐레이션")
-st.caption(
-    "SNS 맞춤 제안 타이틀 | 육하원칙 상세 맥락 요약 | 중복 제거 및 화제성 정렬"
-)
+st.title("📱 인플루언서/마케팅 실시간 이슈 AI 큐레이션")
+st.caption("Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약")
 
-st.sidebar.header("⚙️ 수집 조건 설정")
+st.sidebar.header("⚙️ 설정 및 API Key")
+
+# API 키 입력 필드 제공
+gemini_key_input = st.sidebar.text_input("Gemini API Key", type="password", help="Google AI Studio에서 발급받은 API Key를 입력하세요.")
+if gemini_key_input:
+    os.environ["GEMINI_API_KEY"] = gemini_key_input
 
 selected_channels = st.sidebar.multiselect(
     "수집 대상 채널 선택",
@@ -334,34 +225,18 @@ selected_channels = st.sidebar.multiselect(
     default=list(st.session_state.channels.keys()),
 )
 
-keyword = st.sidebar.text_input(
-    "상세 검색 키워드 (선택)", value="", placeholder="예: 릴스, 숏폼, 팝업"
-)
+keyword = st.sidebar.text_input("상세 검색 키워드 (선택)", value="", placeholder="예: 릴스, 숏폼, 팝업")
 display_count = st.sidebar.slider("표시할 주요 이슈 수량", 3, 20, 5)
-category_filter = st.sidebar.selectbox(
-    "카테고리 선택", ["전체보기", "긍정이슈", "부정이슈", "마케팅 동향"]
-)
+category_filter = st.sidebar.selectbox("카테고리 선택", ["전체보기", "긍정이슈", "부정이슈", "마케팅 동향"])
 
-fetch_button = st.sidebar.button(
-    "🔄 실시간 이슈 수집 및 정밀 분석", use_container_width=True
-)
+fetch_button = st.sidebar.button("🔄 실시간 이슈 수집 및 AI 정밀 분석", use_container_width=True)
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner(
-        "뉴스를 정밀하게 파싱하여 상세 문맥을 생성하는 중입니다..."
-    ):
-        st.session_state.news_data = process_grouped_news(
-            selected_channels, keyword, display_count
-        )
+    with st.spinner("Gemini AI가 기사를 정밀 분석하여 실명과 사건 경과를 추출 중입니다..."):
+        st.session_state.news_data = process_grouped_news(selected_channels, keyword, display_count)
 
 news_items = st.session_state.get("news_data", [])
-
-if category_filter != "전체보기":
-    filtered_items = [
-        item for item in news_items if item["category"] == category_filter
-    ]
-else:
-    filtered_items = news_items
+filtered_items = news_items if category_filter == "전체보기" else [i for i in news_items if i["category"] == category_filter]
 
 st.sidebar.write(f"현재 표시 이슈: **{len(filtered_items)}개**")
 
@@ -375,11 +250,7 @@ else:
             "마케팅 동향": "🔵 [마케팅 동향 (마켓/인플루언서 활용)]",
         }.get(item["category"], "")
 
-        count_badge = (
-            f"🔥 **관련 기사 {item['article_count']}개 보도 중** (화제성 HIGH)"
-            if item["article_count"] > 1
-            else f"📄 단독/관련 기사 {item['article_count']}개"
-        )
+        count_badge = f"🔥 **관련 기사 {item['article_count']}개 보도 중** (화제성 HIGH)" if item['article_count'] > 1 else f"📄 단독/관련 기사 {item['article_count']}개"
         st.caption(count_badge)
 
         st.subheader(f"{cat_tag} [{item['id']}] {item['original_title']}")
@@ -390,16 +261,14 @@ else:
         with c2:
             st.markdown(f"📰 **대표 출처:** `{item['source_name']}`")
         with c3:
-            st.link_button(
-                "🔗 원본 기사 읽기 ↗", item["source_url"], use_container_width=True
-            )
+            st.link_button("🔗 원본 기사 읽기 ↗", item["source_url"], use_container_width=True)
 
         st.markdown("---")
         st.markdown("### 💡 **SNS 추천 콘텐츠 타이틀 (3가지 제안)**")
         for i, t in enumerate(item["sns_titles"], 1):
             st.markdown(f"*{i}. {t}*")
 
-        st.markdown("### 📝 **이슈 핵심 요약 (상세 3줄 정리)**")
+        st.markdown("### 📝 **이슈 핵심 요약 (AI 상세 3줄 정리)**")
         for line in item["summary_lines"]:
             st.markdown(f"- {line}")
 
@@ -408,14 +277,8 @@ else:
             with f1:
                 name = st.text_input("검수자 이름", key=f"n_{item['id']}")
             with f2:
-                rating = st.slider(
-                    "콘텐츠 만족도 (1~5점)", 1, 5, 5, key=f"r_{item['id']}"
-                )
-            fb_text = st.text_area(
-                "수정 요청 및 피드백",
-                placeholder="타이틀이나 요약문 수정 의견 작성",
-                key=f"t_{item['id']}",
-            )
+                rating = st.slider("콘텐츠 만족도 (1~5점)", 1, 5, 5, key=f"r_{item['id']}")
+            fb_text = st.text_area("수정 요청 및 피드백", placeholder="타이틀이나 요약문 수정 의견 작성", key=f"t_{item['id']}")
 
             if st.form_submit_button("피드백 제출"):
                 if not name.strip():
@@ -428,9 +291,7 @@ else:
                         "reviewer_name": name,
                         "rating": rating,
                         "feedback": fb_text,
-                        "submitted_at": datetime.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
+                        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st.success("피드백이 저장되었습니다!")
         st.divider()
@@ -440,10 +301,7 @@ if os.path.exists(FEEDBACK_FILE):
     try:
         with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            if data:
-                st.dataframe(pd.DataFrame(data), use_container_width=True)
-            else:
-                st.info("아직 피드백이 없습니다.")
+            st.dataframe(pd.DataFrame(data), use_container_width=True) if data else st.info("아직 피드백이 없습니다.")
     except Exception:
         st.info("아직 피드백이 없습니다.")
 else:
