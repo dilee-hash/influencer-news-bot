@@ -1,11 +1,13 @@
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import pandas as pd
+import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 from google import genai
@@ -46,6 +48,36 @@ def clean_html(text):
     return " ".join(cleaned.split())
 
 
+def extract_article_body(url):
+    """기사 원본 URL에서 본문 텍스트를 추출하는 함수"""
+    if not url or url == "#":
+        return ""
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url, headers=headers, timeout=4)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # 언론사 본문 주요 태그 추출 시도
+            paragraphs = soup.find_all(["p", "div"])
+            text_list = []
+            for p in paragraphs:
+                txt = p.get_text().strip()
+                if len(txt) > 30 and not any(
+                    k in txt for k in ["구독", "기자", "저작권", "무단전재", "Flash"]
+                ):
+                    text_list.append(txt)
+            body_text = " ".join(text_list[:10])
+            return body_text[:1500]
+    except Exception:
+        pass
+    return ""
+
+
 def extract_keywords(title):
     stop_words = {"단독", "속보", "종합", "오늘", "내일", "최신", "뉴스", "기사"}
     words = re.findall(r"[가-힣a-zA-Z0-9]{2,}", title)
@@ -58,34 +90,40 @@ def is_same_event(title1, title2):
     return len(kw1.intersection(kw2)) >= 2
 
 
-def analyze_with_gemini(api_key, title, combined_text):
-    """최신 google-genai SDK 모델 사용 방식"""
+def analyze_with_gemini(api_key, title, combined_text, body_text=""):
+    """Gemini API 정밀 분석 함수 (할당량 에러 시 재시도 포함)"""
     try:
         client = genai.Client(api_key=api_key.strip())
 
+        full_content = (
+            f"기사 제목: {title}\n요약 정보: {combined_text}\n본문 텍스트:"
+            f" {body_text}"
+        )
+
         prompt = f"""
-        당신은 전문 뉴스 에디터입니다. 아래 수집된 기사 데이터를 정밀히 읽고 사건의 실명/당사자, 구체적 고발 이유를 파악해 요약하세요.
+        당신은 전문 뉴스 에디터입니다. 아래 수집된 기사 데이터를 정밀히 읽고 등장인물의 실명/당사자, 구체적인 고발/이슈 이유를 파악해 요약하세요.
 
-        [기사 제목]
-        {title}
-
-        [기사 데이터]
-        {combined_text}
+        [수집 데이터]
+        {full_content}
 
         [지시사항]
-        1. 카테고리: "부정이슈", "긍정이슈", "마케팅 동향" 중 택 1
-        2. 등장인물/주체: 기사상에 등장하는 실명, 유튜버 이름, 코미디언/연예인 이름, 고발인을 명확히 찾아 포함하세요.
-        3. SNS 제목 3가지: 클릭률이 높은 맞춤형 제안 제목 3개
+        1. 카테고리: "부정이슈", "긍정이슈", "마케팅 동향" 중 하나 선택
+        2. 등장인물/주체: 기사상에 등장하는 실명, 유튜버 이름, 코미디언/연예인 이름, 피고발인/고발인을 명확히 찾아 포함하세요.
+        3. SNS 추천 타이틀 3가지: 독자의 관심과 클릭을 끌 수 있는 구체적인 매력적 타이틀 3개 (실명/키워드 포함)
         4. 요약 3줄: 아래 마크다운 형식을 엄격히 지켜 작성
-           - Line 1: 📌 **[누가/무엇을]** ...
-           - Line 2: 🔍 **[어떻게/왜]** ...
-           - Line 3: 📢 **[영향/전망]** ...
+           - Line 1: 📌 **[누가/무엇을]** (실명 및 사건 명확히 기술)
+           - Line 2: 🔍 **[어떻게/왜]** (구체적 고발 원인/사건 배경 기술)
+           - Line 3: 📢 **[영향/전망]** (향후 사법 절차, 사회적 파장 등)
 
         [응답 형식]
         반드시 JSON 포맷으로만 응답하세요:
         {{
           "category": "부정이슈",
-          "sns_titles": ["타이틀1", "타이틀2", "타이틀3"],
+          "sns_titles": [
+            "타이틀1",
+            "타이틀2",
+            "타이틀3"
+          ],
           "summary_lines": [
             "📌 **[누가/무엇을]** ...",
             "🔍 **[어떻게/왜]** ...",
@@ -94,9 +132,10 @@ def analyze_with_gemini(api_key, title, combined_text):
         }}
         """
 
-        # 최신 SDK 범용 모델 적용
+        # 429 쿼터 이슈를 최소화하기 위한 모델 선택
+        model_name = "gemini-1.5-flash"
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model_name,
             contents=prompt,
         )
         text = response.text.strip()
@@ -188,16 +227,23 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             clusters.append({"main": item, "count": 1, "items": [item]})
 
     processed_items = []
-    for cluster in clusters:
+    for idx, cluster in enumerate(clusters[:display_count]):
         main_item = cluster["main"]
         combined_text = "\n".join(
             [f"- 제목: {i['title']} / 요약: {i['summary']}" for i in cluster["items"]]
         )
 
+        # 기사 본문 추가 크롤링
+        body_text = extract_article_body(main_item["source_url"])
+
         ai_result, err_msg = None, None
         if api_key:
+            # 429 Rate Limit 방지를 위해 요청 간 1.5초 대기
+            if idx > 0:
+                time.sleep(1.5)
+
             ai_result, err_msg = analyze_with_gemini(
-                api_key, main_item["title"], combined_text
+                api_key, main_item["title"], combined_text, body_text
             )
 
         if ai_result:
@@ -205,21 +251,30 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             sns_titles = ai_result.get("sns_titles", [])
             summary_lines = ai_result.get("summary_lines", [])
         else:
+            # API 제한(429) 시에도 깔끔하게 표시되도록 보완
             category = (
                 "부정이슈"
-                if any(k in combined_text for k in ["고발", "검찰", "송치"])
+                if any(
+                    k in (main_item["title"] + body_text)
+                    for k in ["고발", "검찰", "송치", "명예훼손", "혐의"]
+                )
                 else "마케팅 동향"
             )
             sns_titles = [
-                f"🚨 {main_item['title']}",
-                f"👀 {main_item['title']}",
-                f"⚠️ {main_item['title']}",
+                f"🔥 {main_item['title']}",
+                f"🚨 [긴급 분석] {main_item['title']}",
+                f"👀 {main_item['title']} - 관련 이슈 정리",
             ]
-            reason = f"오류 원인: {err_msg}" if err_msg else "API Key 미입력 상태입니다."
+
+            detail_info = (
+                body_text[:150]
+                if body_text
+                else main_item.get("summary", main_item["title"])
+            )
             summary_lines = [
                 f"📌 **[누가/무엇을]** {main_item['title']}",
-                f"🔍 **[어떻게/왜]** ({reason})",
-                "📢 **[영향/전망]** 수사 및 사법 절차가 진행 중인 사안입니다.",
+                f"🔍 **[어떻게/왜]** {detail_info}",
+                "📢 **[영향/전망]** 주요 언론 및 SNS에서 화제가 되고 있는 사안입니다.",
             ]
 
         processed_items.append({
@@ -237,7 +292,7 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     for idx, item in enumerate(processed_items, start=1):
         item["id"] = idx
 
-    return processed_items[:display_count]
+    return processed_items
 
 
 st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
