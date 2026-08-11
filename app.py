@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -32,7 +31,7 @@ def save_feedback(data):
         try:
             with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
                 feedback_list = json.load(f)
-        except json.JSONDecodeError:
+        except Exception:
             feedback_list = []
     feedback_list.append(data)
     with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
@@ -60,33 +59,48 @@ def is_same_event(title1, title2):
     return len(kw1.intersection(kw2)) >= 2
 
 
-def analyze_with_gemini(api_key, title, combined_text):
-    """Gemini API 호출 및 강제 JSON 파싱 처리"""
+def analyze_batch_with_gemini(api_key, clusters_data):
+    """모든 기사를 묶어서 API 호출 단 1회로 처리"""
     try:
         client = genai.Client(api_key=api_key.strip())
 
+        items_prompt_list = []
+        for i, c in enumerate(clusters_data, 1):
+            items_prompt_list.append(
+                f"[이슈 ID: {i}]\n제목: {c['main']['title']}\n내용 요약: {c['main']['summary']}\n"
+            )
+
+        combined_input = "\n".join(items_prompt_list)
+
         prompt = f"""
-뉴스 제목: {title}
-뉴스 정보: {combined_text}
+당신은 인플루언서 및 마케팅 이슈 분석 전문가입니다.
+아래 제공된 이슈 목록들을 분석하여 각각의 이슈에 대한 JSON 데이터를 배열 형태("items")로 반환해 주세요.
 
-위 뉴스를 분석하여 반드시 아래 JSON 규격으로만 답하세요. 추가 텍스트나 마크다운 기호를 포함하지 마세요.
+[분석할 이슈 목록]
+{combined_input}
 
+[반환 형태 - 반드시 JSON 표준 형식만 출력]
 {{
-  "category": "부정이슈", 
-  "sns_titles": [
-    "실제 사건 내용이 반영된 자극적인 제목 1",
-    "실제 사건 내용이 반영된 궁금증 유발 제목 2",
-    "실제 사건 내용이 반영된 요약형 제목 3"
-  ],
-  "summary_lines": [
-    "📌 **[누가/무엇을]** 기사의 실제 주체와 사건 내용 요약",
-    "🔍 **[어떻게/왜]** 사건의 구체적 경위와 원인 요약",
-    "📢 **[영향/전망]** 앞으로의 수사 진행 및 파장 요약"
+  "items": [
+    {{
+      "id": 1,
+      "category": "부정이슈", 
+      "sns_titles": [
+        "자극적인 SNS 제목 1",
+        "궁금증 유발 제목 2",
+        "핵심 요약 제목 3"
+      ],
+      "summary_lines": [
+        "📌 **[누가/무엇을]** 주요 주체 및 핵심 사건 정리",
+        "🔍 **[어떻게/왜]** 사건의 발생 경위 및 원인",
+        "📢 **[영향/전망]** 파장 및 진행 상황"
+      ]
+    }}
   ]
 }}
+카테고리는 반드시 '긍정이슈', '부정이슈', '마케팅 동향' 중 하나를 선택하세요.
 """
 
-        # response_mime_type을 응용하여 JSON 응답 강제 지정
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
@@ -95,8 +109,8 @@ def analyze_with_gemini(api_key, title, combined_text):
             ),
         )
 
-        text = response.text.strip()
-        return json.loads(text), None
+        res_json = json.loads(response.text.strip())
+        return res_json.get("items", []), None
     except Exception as e:
         return None, str(e)
 
@@ -182,35 +196,44 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
         if not matched:
             clusters.append({"main": item, "count": 1, "items": [item]})
 
-    processed_items = []
-    for idx, cluster in enumerate(clusters[:display_count]):
-        main_item = cluster["main"]
-        combined_text = "\n".join(
-            [f"- 제목: {i['title']} / 요약: {i['summary']}" for i in cluster["items"]]
+    target_clusters = clusters[:display_count]
+
+    ai_analysis_map = {}
+    if api_key:
+        ai_results, err_msg = analyze_batch_with_gemini(
+            api_key, target_clusters
         )
-
-        ai_result, err_msg = None, None
-        if api_key:
-            if idx > 0:
-                time.sleep(2)  # Rate limit 회피 대기
-            ai_result, err_msg = analyze_with_gemini(
-                api_key, main_item["title"], combined_text
-            )
-
-        if ai_result:
-            category = ai_result.get("category", "마케팅 동향")
-            sns_titles = ai_result.get("sns_titles", [])
-            summary_lines = ai_result.get("summary_lines", [])
+        if ai_results:
+            for idx, res in enumerate(ai_results, 1):
+                ai_analysis_map[idx] = res
         else:
-            category = "부정이슈"
-            sns_titles = [f"⚠️ [API 호출 에러] {main_item['title']}"]
+            st.warning(f"⚠️ Gemini API 호출 제한/오류 발생 (기본 요약으로 표시됩니다): {err_msg}")
+
+    processed_items = []
+    for idx, cluster in enumerate(target_clusters, start=1):
+        main_item = cluster["main"]
+        ai_item = ai_analysis_map.get(idx)
+
+        if ai_item:
+            category = ai_item.get("category", "마케팅 동향")
+            sns_titles = ai_item.get("sns_titles", [])
+            summary_lines = ai_item.get("summary_lines", [])
+        else:
+            # API 제한/오류 시 파싱 가능한 기본 데이터 구성
+            category = "마케팅 동향"
+            sns_titles = [
+                f"🔥 {main_item['title']}",
+                f"📢 [이슈 분석] {main_item['title']}",
+                f"👀 관련 소식: {main_item['title'][:30]}...",
+            ]
             summary_lines = [
-                f"📌 **[에러 원인]** {err_msg if err_msg else 'API Key가 설정되지 않았습니다.'}",
-                "🔍 **[확인 필요]** 입력하신 Gemini API Key를 다시 점검해 주세요.",
-                "📢 **[진단]** 구글 API 대시보드에서 키 상태를 확인하세요.",
+                f"📌 **[누가/무엇을]** {main_item['title']}",
+                f"🔍 **[주요 내용]** {main_item['summary'][:100] if main_item['summary'] else '상세 기사 참조'}",
+                f"📢 **[보도 출처]** {main_item['source_name']} (관련 기사 {cluster['count']}건)",
             ]
 
         processed_items.append({
+            "id": idx,
             "category": category,
             "original_title": main_item["title"],
             "sns_titles": sns_titles,
@@ -221,17 +244,15 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
             "article_count": cluster["count"],
         })
 
-    processed_items.sort(key=lambda x: x["article_count"], reverse=True)
-    for idx, item in enumerate(processed_items, start=1):
-        item["id"] = idx
-
     return processed_items
 
 
 st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 AI 큐레이션")
-st.caption("Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약")
+st.caption(
+    "Gemini AI 정밀 분석 | 배치 처리로 API 효율화 | SNS 맞춤 제안 타이틀"
+)
 
 st.sidebar.header("⚙️ 설정 및 API Key")
 
@@ -262,7 +283,7 @@ fetch_button = st.sidebar.button(
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("Gemini AI가 정밀 분석 중입니다..."):
+    with st.spinner("이슈를 수집하고 Gemini AI로 일괄 분석 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
@@ -281,15 +302,15 @@ if not filtered_items:
 else:
     for item in filtered_items:
         cat_tag = {
-            "긍정이슈": "🟢 [긍정이슈 (선한영향력/인기)]",
-            "부정이슈": "🔴 [부정이슈 (부정적이미지)]",
-            "마케팅 동향": "🔵 [마케팅 동향 (마켓/인플루언서 활용)]",
+            "긍정이슈": "🟢 [긍정이슈]",
+            "부정이슈": "🔴 [부정이슈]",
+            "마케팅 동향": "🔵 [마케팅 동향]",
         }.get(item["category"], "")
 
         count_badge = (
             f"🔥 **관련 기사 {item['article_count']}개 보도 중** (화제성 HIGH)"
             if item["article_count"] > 1
-            else f"📄 단독/관련 기사 {item['article_count']}개"
+            else f"📄 관련 기사 {item['article_count']}개"
         )
         st.caption(count_badge)
 
@@ -351,7 +372,10 @@ if os.path.exists(FEEDBACK_FILE):
     try:
         with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            st.dataframe(pd.DataFrame(data), use_container_width=True) if data else st.info("아직 피드백이 없습니다.")
+            if data:
+                st.dataframe(pd.DataFrame(data), use_container_width=True)
+            else:
+                st.info("아직 피드백이 없습니다.")
     except Exception:
         st.info("아직 피드백이 없습니다.")
 else:
