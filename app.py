@@ -46,12 +46,26 @@ def clean_html(text):
     return " ".join(cleaned.split())
 
 
-def extract_keywords(title):
-    """제목에서 중복 불필요 단어를 지우고 핵심 단어 세트 추출"""
-    title = re.sub(r"\[.*?\]|\(.*?\)", "", title)
-    if " - " in title:
-        title = title.rsplit(" - ", 1)[0]
+def clean_title_for_subject(title):
+    clean_t = re.sub(r"\[.*?\]|\(.*?\)|<.*?>", "", title).strip()
+    if " - " in clean_t:
+        clean_t = clean_t.rsplit(" - ", 1)[0]
+    clean_t = re.sub(r"['\"`“”‘’]", "", clean_t)
+    return clean_t.strip()
 
+
+def extract_subject_from_text(title):
+    """제목에서 핵심 행위자와 사건 대상을 원형 그대로 보존 추출"""
+    clean_t = clean_title_for_subject(title)
+    # 사건 관련 핵심 구문 보존
+    match = re.search(r"(.*?)(?:검찰|송치|고발|피소|논란|의혹|입건|경찰)", clean_t)
+    if match and len(match.group(1).strip()) > 3:
+        return match.group(1).strip()
+    return clean_t
+
+
+def extract_keywords(title):
+    title = clean_title_for_subject(title)
     stop_words = {
         "단독",
         "속보",
@@ -70,7 +84,6 @@ def extract_keywords(title):
 
 
 def is_same_event(title1, title2):
-    """핵심 키워드 2개 이상 일치 시 동일 사건으로 처리"""
     kw1 = extract_keywords(title1)
     kw2 = extract_keywords(title2)
     overlap = kw1.intersection(kw2)
@@ -78,9 +91,7 @@ def is_same_event(title1, title2):
 
 
 def categorize_article(title, summary):
-    """정밀 카테고리 분류"""
     text = f"{title} {summary}"
-
     negative_keywords = [
         "검찰",
         "송치",
@@ -143,61 +154,45 @@ def categorize_article(title, summary):
 
 
 def generate_sns_titles(title, category):
-    """SNS 콘텐츠용 추천 타이틀 3가지 제안"""
-    clean_t = re.sub(r"\[.*?\]|\(.*?\)", "", title).strip()
-    if " - " in clean_t:
-        clean_t = clean_t.rsplit(" - ", 1)[0]
-
-    # 주요 키워드 추출
-    kw_list = list(extract_keywords(clean_t))
-    topic = " ".join(kw_list[:3]) if kw_list else clean_t[:20]
+    topic = clean_title_for_subject(title)
+    if len(topic) > 25:
+        topic = topic[:25] + "..."
 
     if category == "부정이슈":
         return [
-            f"🚨 \"결국 사법 처리 수순...\" {topic} 사건 핵심 전말",
-            f"👀 논란의 중심! {topic} 이슈 완전 총정리",
-            f"⚠️ 피소부터 검찰 송치까지, {topic} 사건의 진짜 이유",
+            f"🚨 \"결국 사법 처리 전말...\" {topic} 사건 핵심 정리",
+            f"👀 당사자 및 사건 전말 분석: {topic} 이슈 완전 요약",
+            f"⚠️ 피소부터 송치까지, {topic} 사안의 핵심 개요",
         ]
     elif category == "긍정이슈":
         return [
-            f"✨ \"이게 선한 영향력이지!\" 화제의 {topic} 소식",
-            f"🔥 지금 난리 난 인플루언서 대박 이슈: {topic}",
-            f"👏 모두가 칭찬하는 {topic} 비하인드 스토리",
+            f"✨ \"선한 영향력 화제!\" {topic} 핵심 스토리",
+            f"🔥 지금 관심 폭발 중인 이슈: {topic}",
+            f"👏 대중의 응원 이어지는 {topic} 비하인드",
         ]
     else:
         return [
-            f"💡 마케터 필수 체크! {topic} 트렌드 분석",
-            f"📈 인플루언서 시장 트렌드: {topic} 인사이트",
-            f"🔍 브랜드 담당자라면 무조건 알아야 할 {topic} 이슈",
+            f"💡 마케터 필수 참고! {topic} 트렌드 분석",
+            f"📈 주요 플랫폼·크리에이터 현황: {topic}",
+            f"🔍 트렌드 리포트: 브랜드 담당자가 체크해야 할 {topic}",
         ]
 
 
 def build_readable_3line_summary(title, items, category):
-    """육하원칙 기반의 실질적 내용 중심 3줄 요약 생성"""
-    clean_t = re.sub(r"\[.*?\]|\(.*?\)", "", title).strip()
-    if " - " in clean_t:
-        clean_t = clean_t.rsplit(" - ", 1)[0]
-
-    keywords = list(extract_keywords(clean_t))
-    who = keywords[0] if len(keywords) > 0 else "해당 인플루언서/크리에이터"
-    what = (
-        " ".join(keywords[1:3])
-        if len(keywords) > 2
-        else "관련 사안 및 이슈"
-    )
+    who_what = extract_subject_from_text(title)
 
     if category == "부정이슈":
-        line1 = f"📌 **[누가/무엇을]** {who} 측이 {what} 등 허위사실 유포 및 명예훼손 혐의로 고발·고소된 사안입니다."
-        line2 = f"🔍 **[어떻게/왜]** 경찰 수사 결과 혐의점이 인정되어 사건이 검찰로 송치되었으며, 사법 절차가 진행 중입니다."
-        line3 = f"📢 **[영향/전망]** 무분별한 억측 콘텐츠 발행에 대한 강경 대응 기조가 확산되며 업계 전반에 경각심을 주고 있습니다."
+        line1 = f"📌 **[누가/무엇을]** '{who_what}' 사안과 관련해 허위사실 유포 및 명예훼손 등의 혐의로 피소·고발된 사건입니다."
+        line2 = f"🔍 **[어떻게/왜]** 수사기관 조사 결과 혐의점이 인정되어 관련 사건이 검찰로 송치되는 등 사법 절차가 진행 중입니다."
+        line3 = f"📢 **[영향/전망]** 무분별한 억측성 콘텐츠 발행에 대한 강경 대응 기조가 이어지며, 향후 수사 및 재판 결과에 관심이 집중됩니다."
     elif category == "긍정이슈":
-        line1 = f"📌 **[누가/무엇을]** {who} 측이 {what} 활동을 통해 독보적인 성과와 대중적 호응을 얻고 있습니다."
-        line2 = f"🔍 **[어떻게/왜]** 진정성 있는 콘텐츠 기획과 기부·선행 등 선한 영향력이 SNS상에서 폭발적인 화제를 모았습니다."
-        line3 = f"📢 **[영향/전망]** 이미지 제고는 물론 관련 브랜드 협업 및 팬덤 유입이 급증하며 지속적인 성장이 기대됩니다."
+        line1 = f"📌 **[누가/무엇을]** '{who_what}' 관련 활동이 대중과 팬덤 사이에서 큰 화제를 모으고 있습니다."
+        line2 = f"🔍 **[어떻게/왜]** 진정성 있는 콘텐츠 및 선한 영향력이 SNS와 온라인 커뮤니티를 중심으로 빠르게 확산되었습니다."
+        line3 = f"📢 **[영향/전망]** 브랜드 이미지 제고와 더불어 추가 협업 및 팬덤 유입 등의 긍정적 파급효과가 기대됩니다."
     else:
-        line1 = f"📌 **[누가/무엇을]** {who} 및 관련 주요 플랫폼 시장에서 {what} 관련 새로운 움직임이 포착되었습니다."
-        line2 = f"🔍 **[어떻게/왜]** 알고리즘 변화 및 인플루언서 마케팅 효율성이 중요해짐에 따라 최신 트렌드가 빠르게 재편되는 중입니다."
-        line3 = f"📢 **[영향/전망]** 브랜드 마케터와 크리에이터는 향후 신규 캠페인 전략 수립 시 해당 트렌드를 적극 반영할 필요가 있습니다."
+        line1 = f"📌 **[누가/무엇을]** '{who_what}' 이슈가 인플루언서 및 디지털 마케팅 시장의 주요 화두로 부상했습니다."
+        line2 = f"🔍 **[어떻게/왜]** 플랫폼 환경 변화 및 이용자 반응에 맞춰 관련 마케팅 전략이 빠르게 전환되고 있습니다."
+        line3 = f"📢 **[영향/전망]** 브랜드 담당자는 해당 흐름을 분석하여 향후 캠페인 기획에 적극 활용할 필요가 있습니다."
 
     return [line1, line2, line3]
 
