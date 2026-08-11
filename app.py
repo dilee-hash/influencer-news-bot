@@ -5,10 +5,10 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import google.generativeai as genai
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
-from google import genai
 
 FEEDBACK_FILE = "feedback_db.json"
 
@@ -22,16 +22,6 @@ DEFAULT_CHANNELS = {
 
 if "channels" not in st.session_state:
     st.session_state.channels = DEFAULT_CHANNELS.copy()
-
-
-def get_gemini_client():
-    api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
-    if not api_key:
-        return None
-    try:
-        return genai.Client(api_key=api_key.strip())
-    except Exception:
-        return None
 
 
 def save_feedback(data):
@@ -56,35 +46,6 @@ def clean_html(text):
     return " ".join(cleaned.split())
 
 
-def scrape_full_article(url):
-    """구글 뉴스 리다이렉트를 추적하고 최종 언론사 기사 본문을 추출"""
-    if not url or url == "#":
-        return ""
-    try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-        req = urllib.request.Request(url, headers=headers)
-        # Redirect를 따라가서 최종 URL을 가져옴
-        with urllib.request.urlopen(req, timeout=6) as response:
-            html = response.read().decode("utf-8", errors="ignore")
-            soup = BeautifulSoup(html, "html.parser")
-
-            paragraphs = soup.find_all(["p", "div", "article"])
-            texts = [
-                p.get_text().strip()
-                for p in paragraphs
-                if len(p.get_text().strip()) > 30
-            ]
-            full_text = " ".join(texts[:15])
-            return clean_html(full_text[:2500])
-    except Exception:
-        return ""
-
-
 def extract_keywords(title):
     stop_words = {"단독", "속보", "종합", "오늘", "내일", "최신", "뉴스", "기사"}
     words = re.findall(r"[가-힣a-zA-Z0-9]{2,}", title)
@@ -97,55 +58,49 @@ def is_same_event(title1, title2):
     return len(kw1.intersection(kw2)) >= 2
 
 
-def analyze_with_gemini(client, title, combined_text):
-    """Gemini API 호출 및 응답 파싱"""
-    prompt = f"""
-    당신은 뉴스 데이터 분석 에디터입니다. 아래 제공된 기사 제목과 본문 내용을 바탕으로 분석해 주세요.
-
-    [기사 제목]
-    {title}
-
-    [수집된 기사 텍스트]
-    {combined_text}
-
-    [지시사항]
-    1. 카테고리: "부정이슈", "긍정이슈", "마케팅 동향" 중 하나로 정하세요.
-    2. 등장인물/주체: 기사 텍스트에 언급된 특정 인물명, 유튜버 이름, 피해자/피의자 실명을 확실하게 파악하세요.
-    3. SNS 제목 3가지: 화제성과 클릭률이 높은 맞춤형 제목 3개를 작성하세요.
-    4. 요약 3줄: 아래 지침과 마크다운 형식을 엄격히 지켜 작성하세요.
-       - Line 1: 📌 **[누가/무엇을]** (사건의 주체, 실명, 피의자/고발 내용 명확히 서술)
-       - Line 2: 🔍 **[어떻게/왜]** (구체적 고발 사유, 명예훼손/허위사실 등 사건의 발단과 수사 경과)
-       - Line 3: 📢 **[영향/전망]** (검찰 송치 등 사법 절차 진행 상황 및 향후 여파)
-
-    [응답 형식]
-    반드시 유효한 JSON 형식으로만 응답하세요. 다른 설명이나 수식어는 절대 포함하지 마세요:
-    {{
-      "category": "부정이슈",
-      "sns_titles": [
-        "타이틀 1",
-        "타이틀 2",
-        "타이틀 3"
-      ],
-      "summary_lines": [
-        "📌 **[누가/무엇을]** ...",
-        "🔍 **[어떻게/왜]** ...",
-        "📢 **[영향/전망]** ..."
-      ]
-    }}
-    """
-
+def analyze_with_gemini(api_key, title, combined_text):
+    """안정적인 google-generativeai 패키지로 Gemini 호출"""
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
+        genai.configure(api_key=api_key.strip())
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        prompt = f"""
+        당신은 전문 뉴스 에디터입니다. 아래 수집된 기사 데이터를 정밀히 읽고 사건의 실명/당사자, 구체적 고발 이유를 파악해 요약하세요.
+
+        [기사 제목]
+        {title}
+
+        [기사 데이터]
+        {combined_text}
+
+        [지시사항]
+        1. 카테고리: "부정이슈", "긍정이슈", "마케팅 동향" 중 택 1
+        2. 등장인물/주체: 기사상에 등장하는 실명, 유튜버 이름, 코미디언/연예인 이름, 고발인을 명확히 찾아 포함하세요.
+        3. SNS 제목 3가지: 클릭률이 높은 맞춤형 제안 제목 3개
+        4. 요약 3줄: 아래 마크다운 형식을 엄격히 지켜 작성
+           - Line 1: 📌 **[누가/무엇을]** ...
+           - Line 2: 🔍 **[어떻게/왜]** ...
+           - Line 3: 📢 **[영향/전망]** ...
+
+        [응답 형식]
+        반드시 JSON 포맷으로만 응답하세요:
+        {{
+          "category": "부정이슈",
+          "sns_titles": ["타이틀1", "타이틀2", "타이틀3"],
+          "summary_lines": [
+            "📌 **[누가/무엇을]** ...",
+            "🔍 **[어떻게/왜]** ...",
+            "📢 **[영향/전망]** ..."
+          ]
+        }}
+        """
+
+        response = model.generate_content(prompt)
         text = response.text.strip()
         text = re.sub(r"```json\s*|\s*```", "", text)
-        return json.loads(text)
+        return json.loads(text), None
     except Exception as e:
-        # 실패 시 에러 사유 확인용
-        print(f"Gemini API Error: {e}")
-        return None
+        return None, str(e)
 
 
 def fetch_raw_news(selected_channels, keyword):
@@ -213,7 +168,9 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     if not raw_items:
         return []
 
-    client = get_gemini_client()
+    api_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get(
+        "GEMINI_API_KEY", ""
+    )
 
     clusters = []
     for item in raw_items:
@@ -230,19 +187,14 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     processed_items = []
     for cluster in clusters:
         main_item = cluster["main"]
-
-        # 본문 수집 시도 (구글 뉴스 주소 추적)
-        scraped_body = scrape_full_article(main_item["source_url"])
-        combined_text = (
-            f"제목: {main_item['title']}\n"
-            f"요약: {main_item['summary']}\n"
-            f"크롤링 본문: {scraped_body}"
+        combined_text = "\n".join(
+            [f"- 제목: {i['title']} / 요약: {i['summary']}" for i in cluster["items"]]
         )
 
-        ai_result = None
-        if client:
-            ai_result = analyze_with_gemini(
-                client, main_item["title"], combined_text
+        ai_result, err_msg = None, None
+        if api_key:
+            ai_result, err_msg = analyze_with_gemini(
+                api_key, main_item["title"], combined_text
             )
 
         if ai_result:
@@ -260,9 +212,10 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
                 f"👀 {main_item['title']}",
                 f"⚠️ {main_item['title']}",
             ]
+            reason = f"오류 원인: {err_msg}" if err_msg else "API Key 미입력 상태입니다."
             summary_lines = [
                 f"📌 **[누가/무엇을]** {main_item['title']}",
-                "🔍 **[어떻게/왜]** (API 연동 실패 또는 본문 수집 제한으로 기본 요약이 표시됩니다)",
+                f"🔍 **[어떻게/왜]** ({reason})",
                 "📢 **[영향/전망]** 수사 및 사법 절차가 진행 중인 사안입니다.",
             ]
 
@@ -284,10 +237,14 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     return processed_items[:display_count]
 
 
-st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
+st.set_page_config(
+    page_title="인플루언서 뉴스 AI 큐레이션", layout="wide"
+)
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 AI 큐레이션")
-st.caption("Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약")
+st.caption(
+    "Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약"
+)
 
 st.sidebar.header("⚙️ 설정 및 API Key")
 
@@ -318,7 +275,7 @@ fetch_button = st.sidebar.button(
 )
 
 if "news_data" not in st.session_state or fetch_button:
-    with st.spinner("기사 본문을 추적 스크래핑하고 Gemini AI가 분석 중입니다..."):
+    with st.spinner("Gemini AI가 정밀 분석 중입니다..."):
         st.session_state.news_data = process_grouped_news(
             selected_channels, keyword, display_count
         )
