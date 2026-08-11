@@ -5,10 +5,10 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
-import google.generativeai as genai
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
+from google import genai
 
 FEEDBACK_FILE = "feedback_db.json"
 
@@ -59,10 +59,9 @@ def is_same_event(title1, title2):
 
 
 def analyze_with_gemini(api_key, title, combined_text):
-    """안정적인 google-generativeai 패키지로 Gemini 호출"""
+    """최신 google-genai SDK 모델 사용 방식"""
     try:
-        genai.configure(api_key=api_key.strip())
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        client = genai.Client(api_key=api_key.strip())
 
         prompt = f"""
         당신은 전문 뉴스 에디터입니다. 아래 수집된 기사 데이터를 정밀히 읽고 사건의 실명/당사자, 구체적 고발 이유를 파악해 요약하세요.
@@ -95,7 +94,11 @@ def analyze_with_gemini(api_key, title, combined_text):
         }}
         """
 
-        response = model.generate_content(prompt)
+        # 최신 SDK 범용 모델 적용
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
         text = response.text.strip()
         text = re.sub(r"```json\s*|\s*```", "", text)
         return json.loads(text), None
@@ -237,14 +240,10 @@ def process_grouped_news(selected_channels, keyword, display_count=5):
     return processed_items[:display_count]
 
 
-st.set_page_config(
-    page_title="인플루언서 뉴스 AI 큐레이션", layout="wide"
-)
+st.set_page_config(page_title="인플루언서 뉴스 AI 큐레이션", layout="wide")
 
 st.title("📱 인플루언서/마케팅 실시간 이슈 AI 큐레이션")
-st.caption(
-    "Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약"
-)
+st.caption("Gemini AI 정밀 분석 | SNS 맞춤 제안 타이틀 | 실명·맥락 완벽 요약")
 
 st.sidebar.header("⚙️ 설정 및 API Key")
 
